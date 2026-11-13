@@ -1,0 +1,22 @@
+name: cam_board_host
+description: "cam-board 鄉民端"
+publish_to: none
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.13.7
+
+dependencies:
+  flutter:
+    sdk: flutter
+  # 兩端共用的邏輯。用相對路徑，所以要從 cam-board 這個 meta repo 裡建置。
+  cam_board_core:
+    path: ../cam-board-core
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
