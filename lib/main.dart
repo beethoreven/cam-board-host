@@ -1,16 +1,32 @@
 import 'package:flutter/material.dart';
 
-void main() => runApp(const CamBoardApp());
+import 'board_list_controller.dart';
+import 'screens/board_list_screen.dart';
+import 'services/board_browser.dart';
+import 'services/board_probe.dart';
 
-/// 鄉民端。目前只有骨架，功能從「找到看板」這一步開始加。
+void main() {
+  runApp(
+    CamBoardApp(
+      controller: BoardListController(
+        browser: BonsoirBoardBrowser(),
+        probe: probeBoard,
+      ),
+    ),
+  );
+}
+
+/// 鄉民端。
 class CamBoardApp extends StatelessWidget {
-  const CamBoardApp({super.key});
+  const CamBoardApp({super.key, required this.controller});
+
+  final BoardListController controller;
 
   @override
   Widget build(BuildContext context) {
-    return const MaterialApp(
+    return MaterialApp(
       title: '鄉民端',
-      home: Scaffold(body: Center(child: Text('鄉民端'))),
+      home: BoardListScreen(controller: controller),
     );
   }
 }

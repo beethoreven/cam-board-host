@@ -12,9 +12,13 @@ dependencies:
   # 兩端共用的邏輯。用相對路徑，所以要從 cam-board 這個 meta repo 裡建置。
   cam_board_core:
     path: ../cam-board-core
+  bonsoir: ^7.1.6
 
 dev_dependencies:
   flutter_test:
+    sdk: flutter
+  # 在真的 macOS 程式裡跑、用真的區域網路搜尋的測試。
+  integration_test:
     sdk: flutter
   flutter_lints: ^6.0.0
 
