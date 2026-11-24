@@ -61,6 +61,21 @@ class WebRtcBoardLink implements BoardLink {
   RTCPeerConnection? _connection;
   bool _closed = false;
 
+  /// 看板端的網路路徑常常比我們處理完它的連線資訊還早到，先留著。
+  late final CandidateGate _candidates = CandidateGate(
+    (candidate) async => _connection?.addCandidate(
+      RTCIceCandidate(
+        candidate.candidate,
+        candidate.sdpMid,
+        candidate.sdpMLineIndex,
+      ),
+    ),
+  );
+
+  /// 訊息一則處理完才處理下一則。處理連線資訊要一段時間，
+  /// 不排隊的話後面的訊息會在它做到一半時插進來。
+  Future<void> _handling = Future.value();
+
   @override
   Stream<BoardLinkEvent> get events => _events.stream;
 
@@ -77,7 +92,7 @@ class WebRtcBoardLink implements BoardLink {
       }
       _socket = socket;
       socket.listen(
-        _onSocketMessage,
+        (raw) => _handling = _handling.then((_) => _onSocketMessage(raw)),
         onDone: () => _fail('和看板端的連線中斷了'),
         onError: (_) => _fail('和看板端的連線中斷了'),
         cancelOnError: true,
@@ -109,13 +124,7 @@ class WebRtcBoardLink implements BoardLink {
         case OfferMessage(:final sdp):
           await _answer(sdp);
         case CandidateMessage():
-          await _connection?.addCandidate(
-            RTCIceCandidate(
-              message.candidate,
-              message.sdpMid,
-              message.sdpMLineIndex,
-            ),
-          );
+          await _candidates.add(message);
         case ByeMessage(:final reason):
           _fail(describeByeReason(reason));
         case JoinMessage() || AnswerMessage():
@@ -159,6 +168,7 @@ class WebRtcBoardLink implements BoardLink {
     await connection.setRemoteDescription(
       RTCSessionDescription(offerSdp, 'offer'),
     );
+    await _candidates.open();
     final answer = await connection.createAnswer();
     await connection.setLocalDescription(answer);
     _socket?.add(AnswerMessage(sdp: answer.sdp!).encode());
