@@ -13,6 +13,12 @@ dependencies:
   cam_board_core:
     path: ../cam-board-core
   bonsoir: ^7.1.6
+  flutter_webrtc: ^1.6.3
+  # 固定在 0.6.0：0.7 以上要求 Flutter 3.50，跟鎖定的 3.47.9 不相容（見根目錄 README）。
+  window_manager: 0.6.0
+  # window_manager 0.6.0 的底層。直接引用是為了取得螢幕的可用範圍；
+  # 版本要跟 window_manager 0.6.0 依賴的一致，升 window_manager 時一起升。
+  nativeapi: 0.5.10
 
 dev_dependencies:
   flutter_test:

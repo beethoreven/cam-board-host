@@ -29,8 +29,9 @@ class BoardListController extends ChangeNotifier {
   bool get probing => _probing;
   bool _probing = false;
 
-  /// 開始搜尋看板。
+  /// 開始搜尋看板。重複呼叫只會開始一次，因為清單畫面在每次觀看結束後都會重新出現。
   Future<void> start() async {
+    if (_subscription != null) return;
     _subscription = _browser.events.listen((event) {
       switch (event) {
         case BoardFound(:final id, :final board):

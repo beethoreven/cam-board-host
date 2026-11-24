@@ -4,7 +4,10 @@ import 'package:cam_board_core/cam_board_core.dart';
 import 'package:cam_board_host/board_list_controller.dart';
 import 'package:cam_board_host/main.dart';
 import 'package:cam_board_host/services/board_browser.dart';
+import 'package:cam_board_host/services/board_link.dart';
 import 'package:cam_board_host/services/board_probe.dart';
+import 'package:cam_board_host/services/window_control.dart';
+import 'package:cam_board_host/viewer_controller.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
@@ -20,12 +23,18 @@ void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
   Future<void> pumpRealApp(WidgetTester tester) async {
+    final window = NativeWindowControl();
     await tester.pumpWidget(
       CamBoardApp(
-        controller: BoardListController(
+        listController: BoardListController(
           browser: BonsoirBoardBrowser(),
           probe: probeBoard,
         ),
+        viewerController: ViewerController(
+          createLink: WebRtcBoardLink.new,
+          window: window,
+        ),
+        window: window,
       ),
     );
   }
