@@ -10,7 +10,12 @@ import 'package:flutter/foundation.dart';
 /// 用介面隔開，測試才不用真的寫檔案。
 abstract interface class ShotStore {
   /// 在 [parent] 底下建立名稱是 [name] 的資料夾，回傳它的完整路徑。
-  Future<String> createFolder(String parent, String name);
+  /// 已經有同名的資料夾時不動它，回傳 null：裡面可能有上一次抄錄的照片，
+  /// 共用的話新的 001.png 會蓋掉舊的。
+  Future<String?> createFolder(String parent, String name);
+
+  /// 抄錄沒有開始成：把剛建立的資料夾收掉。裡面有東西時不動它。
+  Future<void> discardFolder(String folder);
 
   /// 把看板端傳來的 [frame] 存成 [folder] 裡的 [fileName]（PNG）。先把畫面轉正，
   /// 再套用鄉民端自己的 [rotation] 和 [mirrored]，存下來的就是鄉民端看到的樣子。
@@ -26,10 +31,21 @@ abstract interface class ShotStore {
 /// 存到這台電腦的檔案系統。
 class FileShotStore implements ShotStore {
   @override
-  Future<String> createFolder(String parent, String name) async {
+  Future<String?> createFolder(String parent, String name) async {
     final folder = Directory('$parent${Platform.pathSeparator}$name');
+    if (await folder.exists()) return null;
     await folder.create(recursive: true);
     return folder.path;
+  }
+
+  @override
+  Future<void> discardFolder(String folder) async {
+    try {
+      // 不遞迴：資料夾不是空的就會失敗，剛好是我們要的。
+      await Directory(folder).delete();
+    } on FileSystemException {
+      // 裡面有東西，或已經不在了：都不用處理。
+    }
   }
 
   @override
@@ -47,8 +63,23 @@ class FileShotStore implements ShotStore {
       mirrored: mirrored,
     );
     final encoded = watch.elapsedMilliseconds;
-    await File('$folder${Platform.pathSeparator}$fileName')
-        .writeAsBytes(bytes, flush: true);
+    // 先寫到暫時的檔名，寫完整了才改成正式的檔名。直接寫正式檔名的話，
+    // 寫到一半失敗（磁碟滿了、隨身碟被拔掉）會留下一張打不開的 001.png。
+    final target = File('$folder${Platform.pathSeparator}$fileName');
+    final partial = File(
+      '${target.path}.${DateTime.now().microsecondsSinceEpoch}.part',
+    );
+    try {
+      await partial.writeAsBytes(bytes, flush: true);
+      await partial.rename(target.path);
+    } catch (_) {
+      try {
+        await partial.delete();
+      } on FileSystemException {
+        // 連暫時的檔案都沒寫成，沒有東西要刪。
+      }
+      rethrow;
+    }
     // 按拍照到看板端跳出提示之間，鄉民端花的時間就是這兩段。
     debugPrint(
       '存照片 $fileName：轉成 PNG $encoded 毫秒，'

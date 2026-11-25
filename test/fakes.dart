@@ -40,6 +40,14 @@ class FakeBrowser implements BoardBrowser {
 
   @override
   Future<void> stop() async => running = false;
+
+  void Function()? _onStopped;
+
+  @override
+  set onStopped(void Function()? handler) => _onStopped = handler;
+
+  /// 模擬搜尋自己停掉。
+  void emitStopped() => _onStopped?.call();
 }
 
 /// 假的試連：[names] 裡有的位址回傳對應的看板名稱，其他一律連不上。
@@ -82,7 +90,8 @@ class FakeBoardLink implements BoardLink {
       _events.add(ShotReceived(id, frame ?? grayFrame()));
 
   /// 模擬觀看被迫結束。
-  void emitEnded(String message) => _events.add(LinkEnded(message));
+  void emitEnded(String message, {ByeReason? reason}) =>
+      _events.add(LinkEnded(message, reason: reason));
 
   @override
   Future<void> connect(BoardInfo board, {required String viewerName}) async {
@@ -170,12 +179,19 @@ class FakeShotStore implements ShotStore {
   saved = [];
 
   @override
-  Future<String> createFolder(String parent, String name) async {
+  Future<String?> createFolder(String parent, String name) async {
     if (failOnCreate) throw Exception('這個位置不能寫入');
     final path = '$parent/$name';
+    if (folders.contains(path)) return null;
     folders.add(path);
     return path;
   }
+
+  /// 因為抄錄沒開始成而被收掉的資料夾。
+  final List<String> discarded = [];
+
+  @override
+  Future<void> discardFolder(String folder) async => discarded.add(folder);
 
   @override
   Future<void> save({
@@ -222,6 +238,9 @@ class ViewerHarness {
   String? pickedFolder = '/Users/me/Documents';
   int pickCount = 0;
 
+  /// 選資料夾的視窗要等這個完成才關，用來模擬使用者選了很久。
+  Completer<void>? pickGate;
+
   /// 抄錄開始的時間。
   DateTime now = DateTime(2026, 11, 25, 14, 30, 5);
 
@@ -235,6 +254,7 @@ class ViewerHarness {
     shots: shots,
     pickFolder: () async {
       pickCount++;
+      await pickGate?.future;
       return pickedFolder;
     },
     nameStore: nameStore,

@@ -98,6 +98,15 @@ class _BoardListScreenState extends State<BoardListScreen> {
                             leading: const Icon(Icons.videocam_outlined),
                             title: Text(board.name),
                             subtitle: Text(board.address),
+                            // 手動加入的不會自己消失，要能移除。
+                            trailing: controller.isManual(board)
+                                ? IconButton(
+                                    icon: const Icon(Icons.close),
+                                    tooltip: '移除',
+                                    onPressed: () =>
+                                        controller.removeManual(board),
+                                  )
+                                : null,
                             onTap: () => widget.onWatch(board),
                           ),
                       ],

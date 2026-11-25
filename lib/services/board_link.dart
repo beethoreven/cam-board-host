@@ -39,10 +39,13 @@ final class ShotReceived extends BoardLinkEvent {
 
 /// 觀看結束了，而且不是鄉民端自己按「不看了」造成的。
 final class LinkEnded extends BoardLinkEvent {
-  const LinkEnded(this.message);
+  const LinkEnded(this.message, {this.reason});
 
   /// 結束的原因，可以直接顯示給使用者。
   final String message;
+
+  /// 看板端明確說出的結束原因。連線中斷這類沒有人說「結束」的情況是 null。
+  final ByeReason? reason;
 }
 
 /// 鄉民端對一個看板的連線：交換連線資訊、接收畫面。
@@ -100,6 +103,9 @@ class WebRtcBoardLink implements BoardLink {
 
   /// 看板端剛說「接下來那一筆資料是一張照片」，在等那筆資料。
   ShotMessage? _awaitedShot;
+
+  /// 我們告訴過看板端「正在抄錄」。沒有在抄錄時送來的照片一律不收。
+  bool _recording = false;
 
   /// 看板端的網路路徑常常比我們處理完它的連線資訊還早到，先留著。
   late final CandidateGate _candidates = CandidateGate(
@@ -180,7 +186,10 @@ class WebRtcBoardLink implements BoardLink {
       switch (message) {
         case HelloMessage():
           if (!message.isCompatible) {
-            _fail(describeByeReason(ByeReason.versionMismatch));
+            _fail(
+              describeByeReason(ByeReason.versionMismatch),
+              reason: ByeReason.versionMismatch,
+            );
           }
         case OfferMessage(:final sdp):
           _events.add(const ConnectAdvanced(ConnectStage.exchangingPaths));
@@ -192,9 +201,9 @@ class WebRtcBoardLink implements BoardLink {
           // 判定連不上靠的是我們自己的逾時（見 ViewerController）。
           _events.add(const ConnectAdvanced(ConnectStage.pathsComplete));
         case ShotMessage():
-          _awaitedShot = message;
+          if (_recording) _awaitedShot = message;
         case ByeMessage(:final reason):
-          _fail(describeByeReason(reason));
+          _fail(describeByeReason(reason), reason: reason);
         case JoinMessage() ||
             AnswerMessage() ||
             RecordStartMessage() ||
@@ -215,6 +224,12 @@ class WebRtcBoardLink implements BoardLink {
       'iceServers': <Map<String, dynamic>>[],
       'sdpSemantics': 'unified-plan',
     });
+    // 建立連線的這段時間觀看可能已經結束了（逾時、按了「不看了」）。
+    // 這時沒有人會再來收這條連線，要自己關掉。
+    if (_closed) {
+      await connection.close();
+      return;
+    }
     _connection = connection;
     connection.onTrack = (event) {
       if (event.track.kind == 'video' && event.streams.isNotEmpty) {
@@ -262,9 +277,9 @@ class WebRtcBoardLink implements BoardLink {
   }
 
   /// 觀看被迫結束：通知上層，並把資源收掉。
-  void _fail(String message) {
+  void _fail(String message, {ByeReason? reason}) {
     if (_closed) return;
-    _events.add(LinkEnded(message));
+    _events.add(LinkEnded(message, reason: reason));
     _release();
   }
 
@@ -275,10 +290,17 @@ class WebRtcBoardLink implements BoardLink {
   );
 
   @override
-  void startRecording() => _socket?.add(const RecordStartMessage().encode());
+  void startRecording() {
+    _recording = true;
+    _socket?.add(const RecordStartMessage().encode());
+  }
 
   @override
-  void stopRecording() => _socket?.add(const RecordStopMessage().encode());
+  void stopRecording() {
+    _recording = false;
+    _awaitedShot = null;
+    _socket?.add(const RecordStopMessage().encode());
+  }
 
   @override
   void confirmReceived(int id) =>

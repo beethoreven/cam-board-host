@@ -31,6 +31,10 @@ abstract interface class BoardBrowser {
 
   /// 沒有在搜尋時呼叫也不會出錯。
   Future<void> stop();
+
+  /// 搜尋自己停掉時呼叫（不是我們叫它停的）。不通報的話，清單會一直是空的，
+  /// 看起來跟「沒有看板註冊」一模一樣。
+  set onStopped(void Function()? handler);
 }
 
 /// 用 mDNS（Bonjour）搜尋。
@@ -38,6 +42,10 @@ class BonsoirBoardBrowser implements BoardBrowser {
   final _events = StreamController<BoardBrowserEvent>.broadcast();
   BonsoirDiscovery? _discovery;
   StreamSubscription<BonsoirDiscoveryEvent>? _subscription;
+  void Function()? _onStopped;
+
+  @override
+  set onStopped(void Function()? handler) => _onStopped = handler;
 
   @override
   Stream<BoardBrowserEvent> get events => _events.stream;
@@ -61,11 +69,19 @@ class BonsoirBoardBrowser implements BoardBrowser {
           _events.add(
             BoardFound(
               service.name,
-              BoardInfo(name: service.name, host: host, port: service.port),
+              BoardInfo(
+                name: service.name,
+                host: host,
+                port: service.port,
+                protocol: int.tryParse(service.attributes['protocol'] ?? ''),
+              ),
             ),
           );
         case BonsoirDiscoveryServiceLostEvent(:final service):
           _events.add(BoardLost(service.name));
+        case BonsoirDiscoveryStoppedEvent():
+          // 我們自己停的那一次已經先把 _discovery 清掉了。
+          if (identical(_discovery, discovery)) _onStopped?.call();
         default:
           break;
       }

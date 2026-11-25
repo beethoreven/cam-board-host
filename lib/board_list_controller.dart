@@ -8,7 +8,12 @@ import 'services/board_probe.dart';
 
 /// 鄉民端的看板清單流程：把搜尋結果和手動輸入接到 core 的 [BoardDirectory]。
 class BoardListController extends ChangeNotifier {
-  BoardListController({required this._browser, required this._probe});
+  BoardListController({required this._browser, required this._probe}) {
+    _browser.onStopped = () {
+      _searchError = '自動搜尋停止了（可能沒有區域網路的權限），請改用手動輸入位址';
+      notifyListeners();
+    };
+  }
 
   final BoardBrowser _browser;
   final BoardProbe _probe;
@@ -81,8 +86,18 @@ class BoardListController extends ChangeNotifier {
     }
   }
 
+  /// 這個看板是不是手動加入的。只有這種可以由使用者移除。
+  bool isManual(BoardInfo board) => _directory.isManual(board);
+
+  /// 移除一個手動加入的看板（看板端換了位址、或已經不在了）。
+  void removeManual(BoardInfo board) {
+    _directory.removeManual(board);
+    notifyListeners();
+  }
+
   @override
   void dispose() {
+    _browser.onStopped = null;
     _subscription?.cancel();
     _browser.stop();
     super.dispose();

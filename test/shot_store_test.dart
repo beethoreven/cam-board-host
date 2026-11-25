@@ -6,6 +6,8 @@ import 'package:cam_board_core/cam_board_core.dart';
 import 'package:cam_board_host/services/shot_store.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'fakes.dart';
+
 // 八個不同的亮度，用來認出每個像素被搬到哪裡。
 const _a = 16, _b = 46, _c = 76, _d = 106;
 const _e = 136, _f = 166, _g = 196, _h = 226;
@@ -246,10 +248,10 @@ void main() {
       await tester.runAsync(() async {
         final store = FileShotStore();
 
-        final folder = await store.createFolder(
+        final folder = (await store.createFolder(
           temp.path,
           '甲班抄錄紀錄_26-11-25-14-30-05',
-        );
+        ))!;
         await store.save(
           folder: folder,
           fileName: '001.png',
@@ -292,6 +294,58 @@ void main() {
           File('${temp.path}/001.png').readAsBytesSync(),
         );
         expect((width, height), (1080, 1920));
+      });
+    });
+  });
+
+  group('資料夾與寫檔的保護', () {
+    late Directory temp;
+
+    setUp(() => temp = Directory.systemTemp.createTempSync('cam-board-shots'));
+    tearDown(() => temp.deleteSync(recursive: true));
+
+    test('同名的資料夾已經在了：不共用，回傳 null', () async {
+      final store = FileShotStore();
+      expect(await store.createFolder(temp.path, '甲班'), isNotNull);
+      expect(await store.createFolder(temp.path, '甲班'), isNull);
+    });
+
+    test('收掉空的資料夾；裡面有東西時不動它', () async {
+      final store = FileShotStore();
+      final empty = (await store.createFolder(temp.path, '空的'))!;
+      final used = (await store.createFolder(temp.path, '有照片'))!;
+      File('$used/001.png').writeAsBytesSync([1, 2, 3]);
+
+      await store.discardFolder(empty);
+      await store.discardFolder(used);
+
+      expect(Directory(empty).existsSync(), isFalse);
+      expect(File('$used/001.png').existsSync(), isTrue);
+    });
+
+    testWidgets('存不進去時不會留下寫到一半的檔案', (tester) async {
+      await tester.runAsync(() async {
+        final store = FileShotStore();
+        final folder = (await store.createFolder(temp.path, '甲班'))!;
+        // 正式檔名的位置已經被一個資料夾佔住，改名會失敗。
+        Directory('$folder/001.png').createSync();
+        File('$folder/001.png/x').writeAsBytesSync([1]);
+
+        await expectLater(
+          store.save(
+            folder: folder,
+            fileName: '001.png',
+            frame: grayFrame(),
+            rotation: ViewRotation.deg0,
+            mirrored: false,
+          ),
+          throwsA(anything),
+        );
+
+        final leftovers = Directory(folder)
+            .listSync()
+            .where((entry) => entry.path.endsWith('.part'));
+        expect(leftovers, isEmpty);
       });
     });
   });

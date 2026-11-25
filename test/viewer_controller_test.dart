@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:cam_board_core/cam_board_core.dart';
 import 'package:fake_async/fake_async.dart';
 import 'package:flutter_test/flutter_test.dart' hide pumpEventQueue;
@@ -588,6 +590,62 @@ void main() {
       expect(h.controller.maximized, isFalse);
       expect(h.window.frame.size.width, lessThan(1920));
       expect(h.window.frame.size.aspectRatio, closeTo(16 / 9, 0.001));
+    });
+  });
+
+  group('抄錄的邊界情況', () {
+    test('同一秒內抄錄第二次：用下一秒的名稱，不跟上一次共用資料夾', () async {
+      await startWatching();
+      await h.controller.startRecording();
+      h.controller.stopRecording();
+      await h.controller.startRecording();
+
+      expect(h.shots.folders, [
+        '/Users/me/Documents/甲班抄錄紀錄_26-11-25-14-30-05',
+        '/Users/me/Documents/甲班抄錄紀錄_26-11-25-14-30-06',
+      ]);
+      expect(h.controller.recordingFolder, h.shots.folders.last);
+    });
+
+    test('選資料夾的時候換成看另一個看板：不會替新的那一次開始抄錄', () async {
+      await startWatching();
+      h.pickGate = Completer<void>();
+      final starting = h.controller.startRecording();
+      await h.controller.stop();
+      await h.controller.watch(board);
+      h.link.emitVideo(1920, 1080);
+      h.pickGate!.complete();
+      await starting;
+
+      expect(h.controller.recording, isFalse);
+      expect(h.shots.folders, isEmpty);
+      expect(h.links.first.recordingSignals, isEmpty);
+      expect(h.links.last.recordingSignals, isEmpty);
+    });
+  });
+
+  group('結束的原因', () {
+    test('看板端說了原因就記那個原因', () async {
+      await startWatching();
+      h.link.emitEnded('看板端撤銷註冊了', reason: ByeReason.boardUnregistered);
+
+      expect(h.controller.state, ViewerState.browsing);
+      expect(h.controller.notice, '看板端撤銷註冊了');
+    });
+
+    test('廣播裡的版本跟我們不同：不連過去，直接說明', () async {
+      await h.controller.watch(
+        const BoardInfo(
+          name: '舊版看板',
+          host: '192.168.1.9',
+          port: 47800,
+          protocol: protocolVersion + 1,
+        ),
+      );
+
+      expect(h.controller.state, ViewerState.browsing);
+      expect(h.links, isEmpty);
+      expect(h.controller.notice, contains('版本不同'));
     });
   });
 }

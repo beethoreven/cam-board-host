@@ -41,6 +41,13 @@ class ViewerController extends ChangeNotifier {
   /// 照片一張存完才存下一張，檔名的流水號才不會亂。
   Future<void> _saving = Future.value();
 
+  /// 存一張照片最多等多久。資料夾在網路磁碟或被拔掉的隨身碟上時，寫檔可能
+  /// 永遠不回來；不設期限的話後面的照片會全部排在它後面，一張都存不了。
+  static const _saveTimeout = Duration(seconds: 30);
+
+  /// 同一秒已經有同名的資料夾時，最多往後找幾秒。
+  static const _folderNameTries = 60;
+
   /// 從點了看板到畫面出現最多等多久。
   final Duration _connectTimeout;
   final ViewerSession _session = ViewerSession();
@@ -113,6 +120,11 @@ class ViewerController extends ChangeNotifier {
     if (state != ViewerState.watching || recording || _pickingFolder) return;
     _recordingError = null;
     _pickingFolder = true;
+    // 選資料夾的視窗開著的時候，這次觀看可能結束，甚至已經換成看另一個看板。
+    // 記下是哪一次觀看，回來之後要還是同一次才繼續。
+    final link = _link;
+    final board = _board;
+    bool sameWatch() => state == ViewerState.watching && identical(_link, link);
     final String? parent;
     try {
       parent = await _pickFolder();
@@ -120,22 +132,36 @@ class ViewerController extends ChangeNotifier {
       _pickingFolder = false;
     }
     // 使用者按了取消，或選資料夾的這段時間觀看已經結束了。
-    final board = _board;
-    if (parent == null || state != ViewerState.watching || board == null) {
+    if (parent == null || !sameWatch() || link == null || board == null) {
       return;
     }
     try {
-      final folder = await _shots.createFolder(
-        parent,
-        recordingFolderName(board.name, _now()),
-      );
-      if (state != ViewerState.watching) return;
+      final folder = await _createRecordingFolder(parent, board.name);
+      if (!sameWatch() || recording) {
+        // 建資料夾的時候觀看結束了：不留一個空的資料夾在那裡。
+        await _shots.discardFolder(folder);
+        return;
+      }
       _recording.start(folder);
-      _link?.startRecording();
+      link.startRecording();
     } catch (_) {
       _recordingError = '沒辦法在這個位置建立資料夾，請換一個位置';
     }
     notifyListeners();
+  }
+
+  /// 建立這次抄錄的資料夾。名稱裡的時間是開始抄錄的時間；同一秒內已經抄錄過一次
+  /// （同名的資料夾已經在了）就用下一秒，不跟上一次共用。
+  Future<String> _createRecordingFolder(String parent, String boardName) async {
+    final startedAt = _now();
+    for (var later = 0; later < _folderNameTries; later++) {
+      final folder = await _shots.createFolder(
+        parent,
+        recordingFolderName(boardName, startedAt.add(Duration(seconds: later))),
+      );
+      if (folder != null) return folder;
+    }
+    throw StateError('找不到沒用過的資料夾名稱');
   }
 
   /// 「抄錄完了」。
@@ -160,13 +186,15 @@ class ViewerController extends ChangeNotifier {
       // 排隊等存檔的時候抄錄已經結束（或換了一次新的抄錄）就不存了。
       if (_recording.folder != folder) return;
       try {
-        await _shots.save(
-          folder: folder,
-          fileName: _recording.nextFileName(),
-          frame: frame,
-          rotation: rotation,
-          mirrored: mirrored,
-        );
+        await _shots
+            .save(
+              folder: folder,
+              fileName: _recording.nextFileName(),
+              frame: frame,
+              rotation: rotation,
+              mirrored: mirrored,
+            )
+            .timeout(_saveTimeout);
         _recording.saved();
         _recordingError = null;
       } catch (_) {
@@ -179,6 +207,13 @@ class ViewerController extends ChangeNotifier {
   /// 點了清單上的一個看板。已經在看別的看板時不會有作用。
   Future<void> watch(BoardInfo board) async {
     if (state != ViewerState.browsing) return;
+    // 看板端廣播時就說了它的版本：不一樣的話不用連過去才知道。
+    final protocol = board.protocol;
+    if (protocol != null && protocol != protocolVersion) {
+      _notice = describeByeReason(ByeReason.versionMismatch);
+      notifyListeners();
+      return;
+    }
     _session.startConnecting();
     _board = board;
     _notice = null;
@@ -210,8 +245,8 @@ class ViewerController extends ChangeNotifier {
         _progress.advanceTo(stage);
       case ShotReceived(:final id, :final frame):
         _onShot(id, frame);
-      case LinkEnded(:final message):
-        _finish(ByeReason.boardStopped, notice: message);
+      case LinkEnded(:final message, :final reason):
+        _finish(reason, notice: message);
     }
   }
 
@@ -219,10 +254,7 @@ class ViewerController extends ChangeNotifier {
   void _onConnectTimeout() {
     if (state != ViewerState.connecting) return;
     final link = _link;
-    _finish(
-      ByeReason.boardStopped,
-      notice: describeConnectFailure(_progress.failureOnTimeout),
-    );
+    _finish(null, notice: describeConnectFailure(_progress.failureOnTimeout));
     link?.close();
   }
 
@@ -257,7 +289,8 @@ class ViewerController extends ChangeNotifier {
     await link?.close();
   }
 
-  void _finish(ByeReason reason, {String? notice}) {
+  /// [reason] 是明確的結束原因；連線中斷或逾時沒有人說「結束」，給 null。
+  void _finish(ByeReason? reason, {String? notice}) {
     if (state == ViewerState.browsing) return;
     _connectTimer?.cancel();
     _connectTimer = null;

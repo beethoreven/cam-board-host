@@ -90,4 +90,26 @@ void main() {
       expect(controller.manualError, isNull);
     });
   });
+
+  test('手動加入的看板可以移除，搜尋到的不行', () async {
+    final controller = build();
+    await controller.start();
+    browser.emitFound('甲班', a);
+    await controller.addManual('192.168.1.20');
+    final manual = controller.boards.last;
+
+    expect(controller.isManual(manual), isTrue);
+    expect(controller.isManual(a), isFalse);
+
+    controller.removeManual(manual);
+    expect(controller.boards, [a]);
+  });
+
+  test('搜尋自己停掉時顯示原因', () async {
+    final controller = build();
+    await controller.start();
+    browser.emitStopped();
+
+    expect(controller.searchError, isNotNull);
+  });
 }
