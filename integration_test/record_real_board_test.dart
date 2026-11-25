@@ -67,17 +67,18 @@ void main() {
       await waitFor(shot, 60, '收到照片');
       final received = await shot.future;
 
+      // 收完整就回報，看板端這時就會跳提示；轉成 PNG 和存檔之後才做。
+      link.confirmReceived(received.id);
       final clock = Stopwatch()..start();
       await tester.runAsync(
         () => FileShotStore().save(
           folder: folder.path,
           fileName: shotFileName(1),
-          png: received.png,
+          frame: received.frame,
           rotation: ViewRotation.deg0,
           mirrored: false,
         ),
       );
-      link.confirmSaved(received.id);
 
       final file = File('${folder.path}/${shotFileName(1)}');
       final size = await tester.runAsync(() async {
@@ -92,7 +93,7 @@ void main() {
       );
       // 1080p 的畫面，直拿或橫拿都算。
       expect({size.$1, size.$2}, {1920, 1080});
-      // 讓「存好了」有時間送到看板端。
+      // 讓「收到了」有時間送到看板端。
       await tester.runAsync(
         () => Future<void>.delayed(const Duration(seconds: 2)),
       );

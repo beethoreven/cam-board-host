@@ -1,8 +1,9 @@
+import 'dart:async';
 import 'dart:io';
-import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:cam_board_core/cam_board_core.dart';
+import 'package:flutter/foundation.dart';
 
 /// 把抄錄到的照片存起來。
 ///
@@ -11,12 +12,12 @@ abstract interface class ShotStore {
   /// 在 [parent] 底下建立名稱是 [name] 的資料夾，回傳它的完整路徑。
   Future<String> createFolder(String parent, String name);
 
-  /// 把 [png] 存成 [folder] 裡的 [fileName]。存之前先套用鄉民端自己的
-  /// [rotation] 和 [mirrored]，存下來的就是鄉民端看到的樣子。
+  /// 把看板端傳來的 [frame] 存成 [folder] 裡的 [fileName]（PNG）。先把畫面轉正，
+  /// 再套用鄉民端自己的 [rotation] 和 [mirrored]，存下來的就是鄉民端看到的樣子。
   Future<void> save({
     required String folder,
     required String fileName,
-    required Uint8List png,
+    required RawFrame frame,
     required ViewRotation rotation,
     required bool mirrored,
   });
@@ -35,35 +36,49 @@ class FileShotStore implements ShotStore {
   Future<void> save({
     required String folder,
     required String fileName,
-    required Uint8List png,
+    required RawFrame frame,
     required ViewRotation rotation,
     required bool mirrored,
   }) async {
-    final bytes = await transformPng(
-      png,
+    final watch = Stopwatch()..start();
+    final bytes = await encodeShot(
+      frame,
       rotation: rotation,
       mirrored: mirrored,
     );
+    final encoded = watch.elapsedMilliseconds;
     await File('$folder${Platform.pathSeparator}$fileName')
         .writeAsBytes(bytes, flush: true);
+    // 按拍照到看板端跳出提示之間，鄉民端花的時間就是這兩段。
+    debugPrint(
+      '存照片 $fileName：轉成 PNG $encoded 毫秒，'
+      '寫檔 ${watch.elapsedMilliseconds - encoded} 毫秒，${bytes.length} bytes',
+    );
   }
 }
 
-/// 把一張 PNG 順時針轉 [rotation]，再視 [mirrored] 左右反轉，回傳新的 PNG。
+/// 把看板端傳來的畫面變成一張 PNG：換成紅綠藍，轉正，再順時針轉 [rotation]，
+/// 最後視 [mirrored] 左右反轉。
 ///
 /// 順序跟觀看畫面一樣：先旋轉，再反轉看到的左右。
-/// 不用轉也不用反轉時，原封不動回傳，不重新編碼。
-Future<Uint8List> transformPng(
-  Uint8List png, {
+/// 這些事原本在手機上做，一張要一秒多，所以搬到這裡。
+Future<Uint8List> encodeShot(
+  RawFrame frame, {
   required ViewRotation rotation,
   required bool mirrored,
 }) async {
-  if (rotation == ViewRotation.deg0 && !mirrored) return png;
-
-  final codec = await ui.instantiateImageCodec(png);
-  final source = (await codec.getNextFrame()).image;
-  final sideways =
-      rotation == ViewRotation.deg90 || rotation == ViewRotation.deg270;
+  final decoded = Completer<ui.Image>();
+  ui.decodeImageFromPixels(
+    frame.toRgba(),
+    frame.width,
+    frame.height,
+    ui.PixelFormat.rgba8888,
+    decoded.complete,
+  );
+  final source = await decoded.future;
+  // 畫面本身要轉的角度，加上鄉民端自己轉的角度。
+  final quarterTurns = (frame.rotation ~/ 90 + rotation.index) % 4;
+  final sideways = quarterTurns.isOdd;
   final width = sideways ? source.height : source.width;
   final height = sideways ? source.width : source.height;
 
@@ -76,7 +91,7 @@ Future<Uint8List> transformPng(
   }
   canvas
     ..translate(width / 2, height / 2)
-    ..rotate(rotation.index * 3.141592653589793 / 2)
+    ..rotate(quarterTurns * 3.141592653589793 / 2)
     ..translate(-source.width / 2, -source.height / 2)
     // 一個像素對一個像素搬過去，不做任何平滑處理。
     ..drawImage(
@@ -90,6 +105,5 @@ Future<Uint8List> transformPng(
   source.dispose();
   image.dispose();
   picture.dispose();
-  codec.dispose();
   return data!.buffer.asUint8List();
 }

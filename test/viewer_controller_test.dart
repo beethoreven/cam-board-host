@@ -312,21 +312,20 @@ void main() {
       expect(h.link.recordingSignals, isEmpty);
     });
 
-    test('看板端每拍一張就存一張，檔名照順序，存好了才回報', () async {
+    test('看板端每拍一張就存一張，檔名照順序', () async {
       await startWatching();
       await h.controller.startRecording();
 
-      h.link.emitShot(11, [1]);
-      h.link.emitShot(12, [2]);
+      final first = grayFrame(50);
+      final second = grayFrame(200);
+      h.link.emitShot(11, first);
+      h.link.emitShot(12, second);
       await pumpEventQueue();
 
       expect(h.shots.saved.map((s) => s.fileName), ['001.png', '002.png']);
-      expect(h.shots.saved.map((s) => s.png), [
-        [1],
-        [2],
-      ]);
+      expect(h.shots.saved.map((s) => s.frame), [first, second]);
       expect(h.shots.saved.first.folder, h.controller.recordingFolder);
-      expect(h.link.recordingSignals, ['start', 'saved 11', 'saved 12']);
+      expect(h.link.recordingSignals, ['start', 'received 11', 'received 12']);
       expect(h.controller.savedCount, 2);
     });
 
@@ -365,15 +364,29 @@ void main() {
       expect(h.shots.saved, isEmpty);
     });
 
-    test('存不進去：顯示原因，不回報存好了，下一張用同一個檔名再試', () async {
+    test('照片一收到就回報，不等存檔', () async {
+      await startWatching();
+      await h.controller.startRecording();
+      h.link.emitShot(11);
+
+      // 還沒輪到存檔，看板端已經收到回報了。
+      expect(h.shots.saved, isEmpty);
+      expect(h.link.recordingSignals, ['start', 'received 11']);
+
+      await pumpEventQueue();
+      expect(h.shots.saved, hasLength(1));
+    });
+
+    test('存不進去：鄉民端自己顯示原因，下一張用同一個檔名再試', () async {
       await startWatching();
       await h.controller.startRecording();
       h.shots.failOnSave = true;
       h.link.emitShot(1);
       await pumpEventQueue();
 
+      // 收到的回報在存檔之前就送出了，所以存不進去只有鄉民端自己知道。
       expect(h.controller.recordingError, contains('存不進去'));
-      expect(h.link.recordingSignals, ['start']);
+      expect(h.link.recordingSignals, ['start', 'received 1']);
 
       h.shots.failOnSave = false;
       h.link.emitShot(2);

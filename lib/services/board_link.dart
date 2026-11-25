@@ -28,13 +28,13 @@ final class ConnectAdvanced extends BoardLinkEvent {
 
 /// 看板端拍了一張照片傳過來（只有抄錄中才會收到）。
 final class ShotReceived extends BoardLinkEvent {
-  const ShotReceived(this.id, this.png);
+  const ShotReceived(this.id, this.frame);
 
-  /// 這張照片的編號，存好之後用 [BoardLink.confirmSaved] 回報。
+  /// 這張照片的編號，用 [BoardLink.confirmReceived] 回報收到了。
   final int id;
 
-  /// 照片的 PNG 內容。
-  final Uint8List png;
+  /// 照片的畫面，還沒壓縮，也還沒轉正。
+  final RawFrame frame;
 }
 
 /// 觀看結束了，而且不是鄉民端自己按「不看了」造成的。
@@ -59,8 +59,8 @@ abstract interface class BoardLink {
   /// 告訴看板端：我抄錄完了。
   void stopRecording();
 
-  /// 告訴看板端：編號 [id] 的照片存好了。
-  void confirmSaved(int id);
+  /// 告訴看板端：編號 [id] 的照片完整收到了。
+  void confirmReceived(int id);
 
   /// 顯示收到的畫面。
   Widget buildView();
@@ -158,7 +158,12 @@ class WebRtcBoardLink implements BoardLink {
         _events.add(
           ShotReceived(
             shot.id,
-            raw is Uint8List ? raw : Uint8List.fromList(raw),
+            RawFrame(
+              width: shot.width,
+              height: shot.height,
+              rotation: shot.rotation,
+              i420: raw is Uint8List ? raw : Uint8List.fromList(raw),
+            ),
           ),
         );
       }
@@ -194,7 +199,7 @@ class WebRtcBoardLink implements BoardLink {
             AnswerMessage() ||
             RecordStartMessage() ||
             RecordStopMessage() ||
-            ShotSavedMessage():
+            ShotReceivedMessage():
           // 這幾種只會由鄉民端送出，看板端送來就忽略。
           break;
       }
@@ -276,7 +281,8 @@ class WebRtcBoardLink implements BoardLink {
   void stopRecording() => _socket?.add(const RecordStopMessage().encode());
 
   @override
-  void confirmSaved(int id) => _socket?.add(ShotSavedMessage(id: id).encode());
+  void confirmReceived(int id) =>
+      _socket?.add(ShotReceivedMessage(id: id).encode());
 
   @override
   Future<void> close() async {

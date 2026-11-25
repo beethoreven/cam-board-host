@@ -11,6 +11,14 @@ import 'package:cam_board_host/services/window_control.dart';
 import 'package:cam_board_host/viewer_controller.dart';
 import 'package:flutter/widgets.dart';
 
+/// 一張 2×2、整張同一個亮度的畫面。
+RawFrame grayFrame([int luma = 126]) => RawFrame(
+  width: 2,
+  height: 2,
+  rotation: 0,
+  i420: Uint8List.fromList([luma, luma, luma, luma, 128, 128]),
+);
+
 class FakeBrowser implements BoardBrowser {
   final _events = StreamController<BoardBrowserEvent>.broadcast(sync: true);
   bool failOnStart = false;
@@ -56,7 +64,7 @@ class FakeBoardLink implements BoardLink {
   String? joinedAs;
   bool closed = false;
 
-  /// 送給看板端的抄錄相關通知，照順序：'start'、'stop'、'saved 3'。
+  /// 送給看板端的抄錄相關通知，照順序：'start'、'stop'、'received 3'。
   final List<String> recordingSignals = [];
 
   @override
@@ -70,8 +78,8 @@ class FakeBoardLink implements BoardLink {
   void emitAdvanced(ConnectStage stage) => _events.add(ConnectAdvanced(stage));
 
   /// 模擬看板端拍了一張照片傳過來。
-  void emitShot(int id, [List<int> png = const [9, 9, 9]]) =>
-      _events.add(ShotReceived(id, Uint8List.fromList(png)));
+  void emitShot(int id, [RawFrame? frame]) =>
+      _events.add(ShotReceived(id, frame ?? grayFrame()));
 
   /// 模擬觀看被迫結束。
   void emitEnded(String message) => _events.add(LinkEnded(message));
@@ -89,7 +97,7 @@ class FakeBoardLink implements BoardLink {
   void stopRecording() => recordingSignals.add('stop');
 
   @override
-  void confirmSaved(int id) => recordingSignals.add('saved $id');
+  void confirmReceived(int id) => recordingSignals.add('received $id');
 
   @override
   Widget buildView() => const ColoredBox(
@@ -154,7 +162,7 @@ class FakeShotStore implements ShotStore {
     ({
       String folder,
       String fileName,
-      Uint8List png,
+      RawFrame frame,
       ViewRotation rotation,
       bool mirrored,
     })
@@ -173,7 +181,7 @@ class FakeShotStore implements ShotStore {
   Future<void> save({
     required String folder,
     required String fileName,
-    required Uint8List png,
+    required RawFrame frame,
     required ViewRotation rotation,
     required bool mirrored,
   }) async {
@@ -181,7 +189,7 @@ class FakeShotStore implements ShotStore {
     saved.add((
       folder: folder,
       fileName: fileName,
-      png: png,
+      frame: frame,
       rotation: rotation,
       mirrored: mirrored,
     ));

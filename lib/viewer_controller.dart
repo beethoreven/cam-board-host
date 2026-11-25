@@ -146,11 +146,13 @@ class ViewerController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 看板端傳來一張照片：存下來，存好了再告訴看板端。
-  void _onShot(int id, Uint8List png) {
+  /// 看板端傳來一張照片：先告訴看板端收到了（它這時就顯示誰抄錄了），再存下來。
+  /// 轉成 PNG 要一點時間，不讓看板端等；存不進去時由鄉民端自己顯示原因。
+  void _onShot(int id, RawFrame frame) {
     final folder = _recording.folder;
     final link = _link;
     if (folder == null || link == null) return;
+    link.confirmReceived(id);
     // 存成收到那一刻鄉民端看到的樣子。
     final rotation = _rotation;
     final mirrored = _mirrored;
@@ -161,13 +163,12 @@ class ViewerController extends ChangeNotifier {
         await _shots.save(
           folder: folder,
           fileName: _recording.nextFileName(),
-          png: png,
+          frame: frame,
           rotation: rotation,
           mirrored: mirrored,
         );
         _recording.saved();
         _recordingError = null;
-        link.confirmSaved(id);
       } catch (_) {
         _recordingError = '照片存不進去，請確認資料夾還在、磁碟還有空間';
       }
@@ -207,8 +208,8 @@ class ViewerController extends ChangeNotifier {
         notifyListeners();
       case ConnectAdvanced(:final stage):
         _progress.advanceTo(stage);
-      case ShotReceived(:final id, :final png):
-        _onShot(id, png);
+      case ShotReceived(:final id, :final frame):
+        _onShot(id, frame);
       case LinkEnded(:final message):
         _finish(ByeReason.boardStopped, notice: message);
     }
