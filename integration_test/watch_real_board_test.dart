@@ -36,11 +36,13 @@ void main() {
         case ConnectAdvanced(:final stage):
           // ignore: avoid_print
           print('  ${clock.elapsedMilliseconds} 毫秒：${stage.name}');
+        case ShotReceived():
+          break;
         case LinkEnded(:final message):
           firstVideo.completeError('觀看被結束：$message');
       }
     });
-    await tester.runAsync(() => link.connect(board));
+    await tester.runAsync(() => link.connect(board, viewerName: '整合測試'));
     await tester.pumpWidget(
       MaterialApp(home: Scaffold(body: link.buildView())),
     );

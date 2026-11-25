@@ -4,6 +4,9 @@ import 'package:cam_board_core/cam_board_core.dart';
 import 'package:flutter/foundation.dart';
 
 import 'services/board_link.dart';
+import 'services/folder_picker.dart';
+import 'services/shot_store.dart';
+import 'services/viewer_name_store.dart';
 import 'services/window_control.dart';
 
 /// 鄉民端觀看一個看板的流程：把 core 的規則（[ViewerSession]、視窗大小計算）
@@ -12,6 +15,11 @@ class ViewerController extends ChangeNotifier {
   ViewerController({
     required this._createLink,
     required this._window,
+    required this._shots,
+    required this._pickFolder,
+    required this._nameStore,
+    required this._defaultName,
+    this._now = DateTime.now,
     this._connectTimeout = connectTimeout,
   });
 
@@ -20,6 +28,18 @@ class ViewerController extends ChangeNotifier {
 
   final BoardLinkFactory _createLink;
   final WindowControl _window;
+  final ShotStore _shots;
+  final FolderPicker _pickFolder;
+  final ViewerNameStore _nameStore;
+
+  /// 使用者沒取名稱時用的名稱（這台電腦的名稱）。
+  final String _defaultName;
+  final DateTime Function() _now;
+  final ViewerRecording _recording = ViewerRecording();
+  bool _pickingFolder = false;
+
+  /// 照片一張存完才存下一張，檔名的流水號才不會亂。
+  Future<void> _saving = Future.value();
 
   /// 從點了看板到畫面出現最多等多久。
   final Duration _connectTimeout;
@@ -52,6 +72,109 @@ class ViewerController extends ChangeNotifier {
   String? get notice => _notice;
   String? _notice;
 
+  /// 名稱欄位裡的文字。使用者沒取過名稱時是這台電腦的名稱。
+  String get viewerNameInput => _viewerNameInput ?? _defaultName;
+  String? _viewerNameInput;
+
+  /// 報給看板端的名稱。欄位被清空時用這台電腦的名稱。
+  String get viewerName {
+    final typed = viewerNameInput.trim();
+    return typed.isEmpty ? _defaultName : typed;
+  }
+
+  /// 讀回上次存的名稱。
+  Future<void> loadViewerName() async {
+    _viewerNameInput = await _nameStore.load();
+    notifyListeners();
+  }
+
+  /// 使用者改了名稱欄位。
+  Future<void> setViewerName(String name) async {
+    _viewerNameInput = name;
+    await _nameStore.save(name);
+  }
+
+  /// 正在抄錄。
+  bool get recording => _recording.active;
+
+  /// 這次抄錄存放照片的資料夾。沒有在抄錄時是 null。
+  String? get recordingFolder => _recording.folder;
+
+  /// 這次抄錄已經存了幾張。
+  int get savedCount => _recording.savedCount;
+
+  /// 抄錄出了什麼問題（建不了資料夾、存不了檔），可以直接顯示。沒有問題時是 null。
+  String? get recordingError => _recordingError;
+  String? _recordingError;
+
+  /// 「我要抄錄」：請使用者選一個位置，在裡面建立這次抄錄的資料夾，
+  /// 之後看板端每拍一張就存一張。只有觀看中才能開始。
+  Future<void> startRecording() async {
+    if (state != ViewerState.watching || recording || _pickingFolder) return;
+    _recordingError = null;
+    _pickingFolder = true;
+    final String? parent;
+    try {
+      parent = await _pickFolder();
+    } finally {
+      _pickingFolder = false;
+    }
+    // 使用者按了取消，或選資料夾的這段時間觀看已經結束了。
+    final board = _board;
+    if (parent == null || state != ViewerState.watching || board == null) {
+      return;
+    }
+    try {
+      final folder = await _shots.createFolder(
+        parent,
+        recordingFolderName(board.name, _now()),
+      );
+      if (state != ViewerState.watching) return;
+      _recording.start(folder);
+      _link?.startRecording();
+    } catch (_) {
+      _recordingError = '沒辦法在這個位置建立資料夾，請換一個位置';
+    }
+    notifyListeners();
+  }
+
+  /// 「抄錄完了」。
+  void stopRecording() {
+    if (!recording) return;
+    _recording.stop();
+    _link?.stopRecording();
+    notifyListeners();
+  }
+
+  /// 看板端傳來一張照片：存下來，存好了再告訴看板端。
+  void _onShot(int id, Uint8List png) {
+    final folder = _recording.folder;
+    final link = _link;
+    if (folder == null || link == null) return;
+    // 存成收到那一刻鄉民端看到的樣子。
+    final rotation = _rotation;
+    final mirrored = _mirrored;
+    _saving = _saving.then((_) async {
+      // 排隊等存檔的時候抄錄已經結束（或換了一次新的抄錄）就不存了。
+      if (_recording.folder != folder) return;
+      try {
+        await _shots.save(
+          folder: folder,
+          fileName: _recording.nextFileName(),
+          png: png,
+          rotation: rotation,
+          mirrored: mirrored,
+        );
+        _recording.saved();
+        _recordingError = null;
+        link.confirmSaved(id);
+      } catch (_) {
+        _recordingError = '照片存不進去，請確認資料夾還在、磁碟還有空間';
+      }
+      notifyListeners();
+    });
+  }
+
   /// 點了清單上的一個看板。已經在看別的看板時不會有作用。
   Future<void> watch(BoardInfo board) async {
     if (state != ViewerState.browsing) return;
@@ -68,7 +191,7 @@ class ViewerController extends ChangeNotifier {
     _events = link.events.listen(_onEvent);
     _connectTimer = Timer(_connectTimeout, _onConnectTimeout);
     notifyListeners();
-    await link.connect(board);
+    await link.connect(board, viewerName: viewerName);
   }
 
   void _onEvent(BoardLinkEvent event) {
@@ -84,6 +207,8 @@ class ViewerController extends ChangeNotifier {
         notifyListeners();
       case ConnectAdvanced(:final stage):
         _progress.advanceTo(stage);
+      case ShotReceived(:final id, :final png):
+        _onShot(id, png);
       case LinkEnded(:final message):
         _finish(ByeReason.boardStopped, notice: message);
     }
@@ -135,6 +260,9 @@ class ViewerController extends ChangeNotifier {
     if (state == ViewerState.browsing) return;
     _connectTimer?.cancel();
     _connectTimer = null;
+    // 觀看結束，抄錄也跟著結束。連線已經要關了，不用另外通知看板端。
+    _recording.stop();
+    _recordingError = null;
     _events?.cancel();
     _events = null;
     _link = null;

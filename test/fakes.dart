@@ -1,9 +1,12 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:cam_board_core/cam_board_core.dart';
 import 'package:cam_board_host/services/board_browser.dart';
 import 'package:cam_board_host/services/board_link.dart';
 import 'package:cam_board_host/services/board_probe.dart';
+import 'package:cam_board_host/services/shot_store.dart';
+import 'package:cam_board_host/services/viewer_name_store.dart';
 import 'package:cam_board_host/services/window_control.dart';
 import 'package:cam_board_host/viewer_controller.dart';
 import 'package:flutter/widgets.dart';
@@ -50,7 +53,11 @@ class FakeProbe {
 class FakeBoardLink implements BoardLink {
   final _events = StreamController<BoardLinkEvent>.broadcast(sync: true);
   BoardInfo? connectedTo;
+  String? joinedAs;
   bool closed = false;
+
+  /// 送給看板端的抄錄相關通知，照順序：'start'、'stop'、'saved 3'。
+  final List<String> recordingSignals = [];
 
   @override
   Stream<BoardLinkEvent> get events => _events.stream;
@@ -62,11 +69,27 @@ class FakeBoardLink implements BoardLink {
   /// 模擬連線又往前一步。
   void emitAdvanced(ConnectStage stage) => _events.add(ConnectAdvanced(stage));
 
+  /// 模擬看板端拍了一張照片傳過來。
+  void emitShot(int id, [List<int> png = const [9, 9, 9]]) =>
+      _events.add(ShotReceived(id, Uint8List.fromList(png)));
+
   /// 模擬觀看被迫結束。
   void emitEnded(String message) => _events.add(LinkEnded(message));
 
   @override
-  Future<void> connect(BoardInfo board) async => connectedTo = board;
+  Future<void> connect(BoardInfo board, {required String viewerName}) async {
+    connectedTo = board;
+    joinedAs = viewerName;
+  }
+
+  @override
+  void startRecording() => recordingSignals.add('start');
+
+  @override
+  void stopRecording() => recordingSignals.add('stop');
+
+  @override
+  void confirmSaved(int id) => recordingSignals.add('saved $id');
 
   @override
   Widget buildView() => const ColoredBox(
@@ -118,13 +141,81 @@ class FakeWindow implements WindowControl {
   Widget dragArea({required Widget child}) => child;
 }
 
+/// 假的存檔：不寫檔案，只記下要求存的每一張。
+class FakeShotStore implements ShotStore {
+  bool failOnCreate = false;
+  bool failOnSave = false;
+
+  /// 建立過的資料夾，完整路徑。
+  final List<String> folders = [];
+
+  /// 存過的每一張。
+  final List<
+    ({
+      String folder,
+      String fileName,
+      Uint8List png,
+      ViewRotation rotation,
+      bool mirrored,
+    })
+  >
+  saved = [];
+
+  @override
+  Future<String> createFolder(String parent, String name) async {
+    if (failOnCreate) throw Exception('這個位置不能寫入');
+    final path = '$parent/$name';
+    folders.add(path);
+    return path;
+  }
+
+  @override
+  Future<void> save({
+    required String folder,
+    required String fileName,
+    required Uint8List png,
+    required ViewRotation rotation,
+    required bool mirrored,
+  }) async {
+    if (failOnSave) throw Exception('磁碟滿了');
+    saved.add((
+      folder: folder,
+      fileName: fileName,
+      png: png,
+      rotation: rotation,
+      mirrored: mirrored,
+    ));
+  }
+}
+
+class FakeViewerNameStore implements ViewerNameStore {
+  FakeViewerNameStore([this.saved]);
+
+  String? saved;
+
+  @override
+  Future<String?> load() async => saved;
+
+  @override
+  Future<void> save(String name) async => saved = name;
+}
+
 /// 建立 [ViewerController] 並記下它用過的每一條連線。
 class ViewerHarness {
   ViewerHarness({this.connectTimeout = const Duration(seconds: 10)});
 
   final Duration connectTimeout;
   final window = FakeWindow();
+  final shots = FakeShotStore();
+  final nameStore = FakeViewerNameStore();
   final List<FakeBoardLink> links = [];
+
+  /// 使用者在選資料夾視窗選的位置；null 代表按了取消。
+  String? pickedFolder = '/Users/me/Documents';
+  int pickCount = 0;
+
+  /// 抄錄開始的時間。
+  DateTime now = DateTime(2026, 11, 25, 14, 30, 5);
 
   late final ViewerController controller = ViewerController(
     createLink: () {
@@ -133,6 +224,14 @@ class ViewerHarness {
       return link;
     },
     window: window,
+    shots: shots,
+    pickFolder: () async {
+      pickCount++;
+      return pickedFolder;
+    },
+    nameStore: nameStore,
+    defaultName: '測試用的 Mac',
+    now: () => now,
     connectTimeout: connectTimeout,
   );
 

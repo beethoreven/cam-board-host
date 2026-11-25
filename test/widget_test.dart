@@ -51,6 +51,33 @@ void main() {
     viewer = ViewerHarness();
   });
 
+  group('名稱', () {
+    testWidgets('名稱欄位預設帶入這台電腦的名稱', (tester) async {
+      await pumpApp(tester);
+
+      expect(
+        tester
+            .widget<TextField>(find.byKey(const Key('viewerName')))
+            .controller!
+            .text,
+        '測試用的 Mac',
+      );
+    });
+
+    testWidgets('改了名稱會存起來，點看板時報給看板端', (tester) async {
+      await pumpApp(tester);
+      await tester.enterText(find.byKey(const Key('viewerName')), '阿明');
+      browser.emitFound('甲班', a);
+      await tester.pump();
+      await tester.tap(find.text('甲班'));
+      await tester.pump();
+
+      expect(viewer.nameStore.saved, '阿明');
+      expect(viewer.link.joinedAs, '阿明');
+      await viewer.controller.stop();
+    });
+  });
+
   group('看板清單', () {
     testWidgets('沒有看板時顯示「還沒有看板註冊」', (tester) async {
       await pumpApp(tester);
@@ -75,21 +102,24 @@ void main() {
 
     testWidgets('手動輸入連得上的位址：加進清單並清空輸入框', (tester) async {
       await pumpApp(tester);
-      await tester.enterText(find.byType(TextField), '192.168.1.20');
+      await tester.enterText(find.byKey(const Key('address')), '192.168.1.20');
       await tester.tap(find.text('加入'));
       await tester.pumpAndSettle();
 
       expect(find.text('乙班'), findsOneWidget);
       expect(find.text('192.168.1.20:47800'), findsOneWidget);
       expect(
-        tester.widget<TextField>(find.byType(TextField)).controller!.text,
+        tester
+            .widget<TextField>(find.byKey(const Key('address')))
+            .controller!
+            .text,
         isEmpty,
       );
     });
 
     testWidgets('手動輸入連不上的位址：顯示原因，輸入的內容留著', (tester) async {
       await pumpApp(tester);
-      await tester.enterText(find.byType(TextField), '192.168.1.99');
+      await tester.enterText(find.byKey(const Key('address')), '192.168.1.99');
       await tester.tap(find.text('加入'));
       await tester.pumpAndSettle();
 
@@ -100,7 +130,7 @@ void main() {
 
     testWidgets('手動輸入格式不對的位址：顯示原因', (tester) async {
       await pumpApp(tester);
-      await tester.enterText(find.byType(TextField), '1.2.3.4:abc');
+      await tester.enterText(find.byKey(const Key('address')), '1.2.3.4:abc');
       await tester.tap(find.text('加入'));
       await tester.pumpAndSettle();
 
@@ -189,6 +219,36 @@ void main() {
 
       expect(find.text('還原大小'), findsOneWidget);
       expect(viewer.window.frame.size, const Dimensions(1920, 1080));
+    });
+
+    testWidgets('按「我要抄錄」後按鈕變成「抄錄完了」，再按一次變回來', (tester) async {
+      await pumpApp(tester);
+      await startWatching(tester);
+      await hover(tester);
+
+      await tester.tap(find.text('我要抄錄'));
+      await tester.pumpAndSettle();
+      expect(find.text('抄錄完了'), findsOneWidget);
+      expect(find.text('我要抄錄'), findsNothing);
+      expect(viewer.link.recordingSignals, ['start']);
+
+      await tester.tap(find.text('抄錄完了'));
+      await tester.pumpAndSettle();
+      expect(find.text('我要抄錄'), findsOneWidget);
+      expect(viewer.link.recordingSignals, ['start', 'stop']);
+    });
+
+    testWidgets('資料夾建不起來時，畫面上顯示原因', (tester) async {
+      await pumpApp(tester);
+      await startWatching(tester);
+      await hover(tester);
+      viewer.shots.failOnCreate = true;
+
+      await tester.tap(find.text('我要抄錄'));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('建立資料夾'), findsOneWidget);
+      expect(find.text('我要抄錄'), findsOneWidget);
     });
 
     testWidgets('按「不看了」回到看板清單，看板還在', (tester) async {

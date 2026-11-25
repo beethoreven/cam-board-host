@@ -6,6 +6,8 @@ import 'package:cam_board_host/main.dart';
 import 'package:cam_board_host/services/board_browser.dart';
 import 'package:cam_board_host/services/board_link.dart';
 import 'package:cam_board_host/services/board_probe.dart';
+import 'package:cam_board_host/services/shot_store.dart';
+import 'package:cam_board_host/services/viewer_name_store.dart';
 import 'package:cam_board_host/services/window_control.dart';
 import 'package:cam_board_host/viewer_controller.dart';
 import 'package:flutter/material.dart';
@@ -33,6 +35,10 @@ void main() {
         viewerController: ViewerController(
           createLink: WebRtcBoardLink.new,
           window: window,
+          shots: FileShotStore(),
+          pickFolder: () async => null,
+          nameStore: PrefsViewerNameStore(),
+          defaultName: computerName(),
         ),
         window: window,
       ),

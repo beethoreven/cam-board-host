@@ -7,22 +7,32 @@ import 'screens/viewing_screen.dart';
 import 'services/board_browser.dart';
 import 'services/board_link.dart';
 import 'services/board_probe.dart';
+import 'services/folder_picker.dart';
+import 'services/shot_store.dart';
+import 'services/viewer_name_store.dart';
 import 'services/window_control.dart';
 import 'viewer_controller.dart';
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   final window = NativeWindowControl();
+  final viewerController = ViewerController(
+    createLink: WebRtcBoardLink.new,
+    window: window,
+    shots: FileShotStore(),
+    pickFolder: pickFolderWithSystemDialog,
+    nameStore: PrefsViewerNameStore(),
+    defaultName: computerName(),
+  );
+  // 名稱欄位一出現就要有上次的名稱，所以先讀好再顯示畫面。
+  await viewerController.loadViewerName();
   runApp(
     CamBoardApp(
       listController: BoardListController(
         browser: BonsoirBoardBrowser(),
         probe: probeBoard,
       ),
-      viewerController: ViewerController(
-        createLink: WebRtcBoardLink.new,
-        window: window,
-      ),
+      viewerController: viewerController,
       window: window,
     ),
   );
@@ -52,6 +62,8 @@ class CamBoardApp extends StatelessWidget {
                 controller: listController,
                 onWatch: viewerController.watch,
                 notice: viewerController.notice,
+                viewerName: viewerController.viewerNameInput,
+                onViewerNameChanged: viewerController.setViewerName,
               )
             : ViewingScreen(controller: viewerController, window: window),
       ),

@@ -1,8 +1,11 @@
 import 'package:cam_board_core/cam_board_core.dart';
 import 'package:fake_async/fake_async.dart';
-import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_test/flutter_test.dart' hide pumpEventQueue;
 
 import 'fakes.dart';
+
+/// 等所有排隊中的非同步工作做完。
+Future<void> pumpEventQueue() => Future<void>.delayed(Duration.zero);
 
 void main() {
   const board = BoardInfo(name: '甲班', host: '192.168.1.10', port: 47800);
@@ -226,6 +229,193 @@ void main() {
         expect(h.controller.state, ViewerState.connecting);
         expect(h.controller.board, other);
       });
+    });
+  });
+
+  group('鄉民的名稱', () {
+    test('沒取過名稱時，欄位和報給看板端的都是這台電腦的名稱', () async {
+      await h.controller.loadViewerName();
+      await h.controller.watch(board);
+
+      expect(h.controller.viewerNameInput, '測試用的 Mac');
+      expect(h.link.joinedAs, '測試用的 Mac');
+    });
+
+    test('取過名稱：下次開啟時帶回來，並報給看板端', () async {
+      h.nameStore.saved = '阿明';
+      await h.controller.loadViewerName();
+      await h.controller.watch(board);
+
+      expect(h.controller.viewerNameInput, '阿明');
+      expect(h.link.joinedAs, '阿明');
+    });
+
+    test('改名稱會存起來', () async {
+      await h.controller.setViewerName('小華');
+
+      expect(h.nameStore.saved, '小華');
+      expect(h.controller.viewerName, '小華');
+    });
+
+    test('把欄位清空時，報給看板端的改用這台電腦的名稱', () async {
+      await h.controller.setViewerName('   ');
+      await h.controller.watch(board);
+
+      expect(h.link.joinedAs, '測試用的 Mac');
+    });
+  });
+
+  group('抄錄', () {
+    test('按「我要抄錄」：選位置、建立資料夾、通知看板端', () async {
+      await startWatching();
+      await h.controller.startRecording();
+
+      expect(h.controller.recording, isTrue);
+      expect(h.shots.folders, ['/Users/me/Documents/甲班抄錄紀錄_26-11-25-14-30-05']);
+      expect(h.controller.recordingFolder, h.shots.folders.single);
+      expect(h.link.recordingSignals, ['start']);
+    });
+
+    test('選位置時按取消：不開始抄錄，也不通知看板端', () async {
+      await startWatching();
+      h.pickedFolder = null;
+      await h.controller.startRecording();
+
+      expect(h.controller.recording, isFalse);
+      expect(h.shots.folders, isEmpty);
+      expect(h.link.recordingSignals, isEmpty);
+    });
+
+    test('還沒看到畫面不能抄錄', () async {
+      await h.controller.watch(board);
+      await h.controller.startRecording();
+
+      expect(h.pickCount, 0);
+      expect(h.controller.recording, isFalse);
+    });
+
+    test('已經在抄錄時再按一次不會重新選位置', () async {
+      await startWatching();
+      await h.controller.startRecording();
+      await h.controller.startRecording();
+
+      expect(h.pickCount, 1);
+    });
+
+    test('資料夾建不起來：顯示原因，不算開始抄錄', () async {
+      await startWatching();
+      h.shots.failOnCreate = true;
+      await h.controller.startRecording();
+
+      expect(h.controller.recording, isFalse);
+      expect(h.controller.recordingError, contains('建立資料夾'));
+      expect(h.link.recordingSignals, isEmpty);
+    });
+
+    test('看板端每拍一張就存一張，檔名照順序，存好了才回報', () async {
+      await startWatching();
+      await h.controller.startRecording();
+
+      h.link.emitShot(11, [1]);
+      h.link.emitShot(12, [2]);
+      await pumpEventQueue();
+
+      expect(h.shots.saved.map((s) => s.fileName), ['001.png', '002.png']);
+      expect(h.shots.saved.map((s) => s.png), [
+        [1],
+        [2],
+      ]);
+      expect(h.shots.saved.first.folder, h.controller.recordingFolder);
+      expect(h.link.recordingSignals, ['start', 'saved 11', 'saved 12']);
+      expect(h.controller.savedCount, 2);
+    });
+
+    test('存檔時套用收到那一刻的旋轉和左右反轉', () async {
+      await startWatching();
+      await h.controller.startRecording();
+      h.controller
+        ..rotate()
+        ..toggleMirror();
+
+      h.link.emitShot(1);
+      await pumpEventQueue();
+
+      expect(h.shots.saved.single.rotation, ViewRotation.deg90);
+      expect(h.shots.saved.single.mirrored, isTrue);
+    });
+
+    test('沒有在抄錄時收到照片，不存也不回報', () async {
+      await startWatching();
+      h.link.emitShot(1);
+      await pumpEventQueue();
+
+      expect(h.shots.saved, isEmpty);
+      expect(h.link.recordingSignals, isEmpty);
+    });
+
+    test('按「抄錄完了」：通知看板端，之後收到的照片不存', () async {
+      await startWatching();
+      await h.controller.startRecording();
+      h.controller.stopRecording();
+      h.link.emitShot(1);
+      await pumpEventQueue();
+
+      expect(h.controller.recording, isFalse);
+      expect(h.link.recordingSignals, ['start', 'stop']);
+      expect(h.shots.saved, isEmpty);
+    });
+
+    test('存不進去：顯示原因，不回報存好了，下一張用同一個檔名再試', () async {
+      await startWatching();
+      await h.controller.startRecording();
+      h.shots.failOnSave = true;
+      h.link.emitShot(1);
+      await pumpEventQueue();
+
+      expect(h.controller.recordingError, contains('存不進去'));
+      expect(h.link.recordingSignals, ['start']);
+
+      h.shots.failOnSave = false;
+      h.link.emitShot(2);
+      await pumpEventQueue();
+
+      expect(h.shots.saved.single.fileName, '001.png');
+      expect(h.controller.recordingError, isNull);
+    });
+
+    test('按「不看了」時抄錄跟著結束', () async {
+      await startWatching();
+      await h.controller.startRecording();
+      await h.controller.stop();
+
+      expect(h.controller.recording, isFalse);
+    });
+
+    test('看板端不給看了，抄錄跟著結束；再看一次時不是抄錄中', () async {
+      await startWatching();
+      await h.controller.startRecording();
+      h.link.emitEnded('看板端不給看了');
+      await h.controller.watch(other);
+      h.link.emitVideo(1920, 1080);
+
+      expect(h.controller.recording, isFalse);
+    });
+
+    test('再抄錄一次：新的資料夾，檔名重新從 001 開始', () async {
+      await startWatching();
+      await h.controller.startRecording();
+      h.link.emitShot(1);
+      await pumpEventQueue();
+      h.controller.stopRecording();
+
+      h.now = DateTime(2026, 11, 25, 15, 0, 0);
+      await h.controller.startRecording();
+      h.link.emitShot(2);
+      await pumpEventQueue();
+
+      expect(h.shots.folders, hasLength(2));
+      expect(h.shots.saved.last.folder, endsWith('26-11-25-15-00-00'));
+      expect(h.shots.saved.last.fileName, '001.png');
     });
   });
 

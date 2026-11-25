@@ -9,6 +9,8 @@ class BoardListScreen extends StatefulWidget {
     super.key,
     required this.controller,
     required this.onWatch,
+    required this.viewerName,
+    required this.onViewerNameChanged,
     this.notice,
   });
 
@@ -16,6 +18,12 @@ class BoardListScreen extends StatefulWidget {
 
   /// 點了清單上的一個看板。
   final void Function(BoardInfo board) onWatch;
+
+  /// 名稱欄位一開始的內容。
+  final String viewerName;
+
+  /// 使用者改了名稱。
+  final void Function(String name) onViewerNameChanged;
 
   /// 上一次觀看被迫結束的原因，例如「看板端不給看了」。沒有時是 null。
   final String? notice;
@@ -26,6 +34,7 @@ class BoardListScreen extends StatefulWidget {
 
 class _BoardListScreenState extends State<BoardListScreen> {
   final _address = TextEditingController();
+  late final _name = TextEditingController(text: widget.viewerName);
 
   @override
   void initState() {
@@ -36,6 +45,7 @@ class _BoardListScreenState extends State<BoardListScreen> {
   @override
   void dispose() {
     _address.dispose();
+    _name.dispose();
     super.dispose();
   }
 
@@ -52,6 +62,19 @@ class _BoardListScreenState extends State<BoardListScreen> {
         listenable: controller,
         builder: (context, _) => Column(
           children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+              child: TextField(
+                key: const Key('viewerName'),
+                controller: _name,
+                decoration: const InputDecoration(
+                  labelText: '名稱',
+                  hintText: '抄錄時，看板端會看到這個名稱',
+                  border: OutlineInputBorder(),
+                ),
+                onChanged: widget.onViewerNameChanged,
+              ),
+            ),
             if (widget.notice case final notice?)
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
@@ -88,6 +111,7 @@ class _BoardListScreenState extends State<BoardListScreen> {
                 children: [
                   Expanded(
                     child: TextField(
+                      key: const Key('address'),
                       controller: _address,
                       enabled: !controller.probing,
                       decoration: InputDecoration(

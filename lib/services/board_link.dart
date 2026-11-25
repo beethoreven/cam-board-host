@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:cam_board_core/cam_board_core.dart';
 import 'package:flutter/widgets.dart';
@@ -25,6 +26,17 @@ final class ConnectAdvanced extends BoardLinkEvent {
   final ConnectStage stage;
 }
 
+/// 看板端拍了一張照片傳過來（只有抄錄中才會收到）。
+final class ShotReceived extends BoardLinkEvent {
+  const ShotReceived(this.id, this.png);
+
+  /// 這張照片的編號，存好之後用 [BoardLink.confirmSaved] 回報。
+  final int id;
+
+  /// 照片的 PNG 內容。
+  final Uint8List png;
+}
+
 /// 觀看結束了，而且不是鄉民端自己按「不看了」造成的。
 final class LinkEnded extends BoardLinkEvent {
   const LinkEnded(this.message);
@@ -37,8 +49,18 @@ final class LinkEnded extends BoardLinkEvent {
 abstract interface class BoardLink {
   Stream<BoardLinkEvent> get events;
 
-  /// 連到看板並要求觀看。連不上時會從 [events] 送出 [LinkEnded]。
-  Future<void> connect(BoardInfo board);
+  /// 連到看板並要求觀看，[viewerName] 是報給看板端的鄉民名稱。
+  /// 連不上時會從 [events] 送出 [LinkEnded]。
+  Future<void> connect(BoardInfo board, {required String viewerName});
+
+  /// 告訴看板端：我開始抄錄了，之後拍的照片請傳給我。
+  void startRecording();
+
+  /// 告訴看板端：我抄錄完了。
+  void stopRecording();
+
+  /// 告訴看板端：編號 [id] 的照片存好了。
+  void confirmSaved(int id);
 
   /// 顯示收到的畫面。
   Widget buildView();
@@ -76,6 +98,9 @@ class WebRtcBoardLink implements BoardLink {
   RTCPeerConnection? _connection;
   bool _closed = false;
 
+  /// 看板端剛說「接下來那一筆資料是一張照片」，在等那筆資料。
+  ShotMessage? _awaitedShot;
+
   /// 看板端的網路路徑常常比我們處理完它的連線資訊還早到，先留著。
   late final CandidateGate _candidates = CandidateGate(
     (candidate) async => _connection?.addCandidate(
@@ -95,7 +120,7 @@ class WebRtcBoardLink implements BoardLink {
   Stream<BoardLinkEvent> get events => _events.stream;
 
   @override
-  Future<void> connect(BoardInfo board) async {
+  Future<void> connect(BoardInfo board, {required String viewerName}) async {
     try {
       await _renderer.initialize();
       _renderer.onResize = _reportSize;
@@ -112,7 +137,7 @@ class WebRtcBoardLink implements BoardLink {
         onError: (_) => _fail('和看板端的連線中斷了'),
         cancelOnError: true,
       );
-      socket.add(const JoinMessage().encode());
+      socket.add(JoinMessage(name: viewerName).encode());
       _events.add(const ConnectAdvanced(ConnectStage.waitingForOffer));
     } on TimeoutException {
       _fail('連線逾時，請確認兩台裝置在同一個網路');
@@ -124,7 +149,22 @@ class WebRtcBoardLink implements BoardLink {
   }
 
   Future<void> _onSocketMessage(Object? raw) async {
-    if (raw is! String || _closed) return;
+    if (_closed) return;
+    if (raw is List<int>) {
+      // 二進位資料只有一種：緊接在 shot 訊息後面的那張照片。
+      final shot = _awaitedShot;
+      _awaitedShot = null;
+      if (shot != null && raw.length == shot.bytes) {
+        _events.add(
+          ShotReceived(
+            shot.id,
+            raw is Uint8List ? raw : Uint8List.fromList(raw),
+          ),
+        );
+      }
+      return;
+    }
+    if (raw is! String) return;
     final SignalMessage message;
     try {
       message = SignalMessage.decode(raw);
@@ -146,10 +186,16 @@ class WebRtcBoardLink implements BoardLink {
           // 只用來判斷連不上的原因，不交給視訊連線：
           // 判定連不上靠的是我們自己的逾時（見 ViewerController）。
           _events.add(const ConnectAdvanced(ConnectStage.pathsComplete));
+        case ShotMessage():
+          _awaitedShot = message;
         case ByeMessage(:final reason):
           _fail(describeByeReason(reason));
-        case JoinMessage() || AnswerMessage():
-          // 這兩種只會由鄉民端送出，看板端送來就忽略。
+        case JoinMessage() ||
+            AnswerMessage() ||
+            RecordStartMessage() ||
+            RecordStopMessage() ||
+            ShotSavedMessage():
+          // 這幾種只會由鄉民端送出，看板端送來就忽略。
           break;
       }
     } catch (_) {
@@ -222,6 +268,15 @@ class WebRtcBoardLink implements BoardLink {
     _renderer,
     objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitContain,
   );
+
+  @override
+  void startRecording() => _socket?.add(const RecordStartMessage().encode());
+
+  @override
+  void stopRecording() => _socket?.add(const RecordStopMessage().encode());
+
+  @override
+  void confirmSaved(int id) => _socket?.add(ShotSavedMessage(id: id).encode());
 
   @override
   Future<void> close() async {

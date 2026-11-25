@@ -65,6 +65,24 @@ class _ViewingScreenState extends State<ViewingScreen> {
                 ),
               ),
             ),
+            if (controller.recordingError case final error?)
+              Align(
+                alignment: Alignment.topCenter,
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Material(
+                    color: Colors.black87,
+                    borderRadius: BorderRadius.circular(8),
+                    child: Padding(
+                      padding: const EdgeInsets.all(8),
+                      child: Text(
+                        error,
+                        style: const TextStyle(color: Colors.white),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
             if (_hovering)
               Align(
                 alignment: Alignment.bottomCenter,
@@ -84,6 +102,12 @@ class _ViewingScreenState extends State<ViewingScreen> {
                             controller.maximized ? '還原大小' : '放到最大',
                             controller.toggleMaximize,
                           ),
+                          controller.recording
+                              ? _ControlButton('抄錄完了', controller.stopRecording)
+                              : _ControlButton(
+                                  '我要抄錄',
+                                  controller.startRecording,
+                                ),
                           _ControlButton('不看了', controller.stop),
                         ],
                       ),
