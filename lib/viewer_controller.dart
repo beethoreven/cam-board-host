@@ -9,14 +9,23 @@ import 'services/window_control.dart';
 /// 鄉民端觀看一個看板的流程：把 core 的規則（[ViewerSession]、視窗大小計算）
 /// 接上連線和視窗。
 class ViewerController extends ChangeNotifier {
-  ViewerController({required this._createLink, required this._window});
+  ViewerController({
+    required this._createLink,
+    required this._window,
+    this._connectTimeout = connectTimeout,
+  });
 
   /// 沒有放到最大時，視窗最多佔螢幕可用範圍的比例。
   static const _normalScale = 0.6;
 
   final BoardLinkFactory _createLink;
   final WindowControl _window;
+
+  /// 從點了看板到畫面出現最多等多久。
+  final Duration _connectTimeout;
   final ViewerSession _session = ViewerSession();
+  ConnectProgress _progress = ConnectProgress();
+  Timer? _connectTimer;
   BoardLink? _link;
   StreamSubscription<BoardLinkEvent>? _events;
   Dimensions? _video;
@@ -53,9 +62,11 @@ class ViewerController extends ChangeNotifier {
     _mirrored = false;
     _maximized = false;
     _video = null;
+    _progress = ConnectProgress();
     final link = _createLink();
     _link = link;
     _events = link.events.listen(_onEvent);
+    _connectTimer = Timer(_connectTimeout, _onConnectTimeout);
     notifyListeners();
     await link.connect(board);
   }
@@ -65,12 +76,28 @@ class ViewerController extends ChangeNotifier {
       case VideoSizeChanged(:final size):
         if (state == ViewerState.browsing) return;
         _video = size;
-        if (state == ViewerState.connecting) _session.videoArrived();
+        if (state == ViewerState.connecting) {
+          _session.videoArrived();
+          _connectTimer?.cancel();
+        }
         _applyWindow();
         notifyListeners();
+      case ConnectAdvanced(:final stage):
+        _progress.advanceTo(stage);
       case LinkEnded(:final message):
         _finish(ByeReason.boardStopped, notice: message);
     }
+  }
+
+  /// 等太久畫面還是沒出來：不再等，回到清單並說明卡在哪裡。
+  void _onConnectTimeout() {
+    if (state != ViewerState.connecting) return;
+    final link = _link;
+    _finish(
+      ByeReason.boardStopped,
+      notice: describeConnectFailure(_progress.failureOnTimeout),
+    );
+    link?.close();
   }
 
   /// 順時針轉 90 度。
@@ -106,6 +133,8 @@ class ViewerController extends ChangeNotifier {
 
   void _finish(ByeReason reason, {String? notice}) {
     if (state == ViewerState.browsing) return;
+    _connectTimer?.cancel();
+    _connectTimer = null;
     _events?.cancel();
     _events = null;
     _link = null;
@@ -173,6 +202,7 @@ class ViewerController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _connectTimer?.cancel();
     _events?.cancel();
     _link?.close();
     super.dispose();

@@ -18,15 +18,24 @@ void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
   final skip = _boardAddress.isEmpty ? '沒有用 --dart-define=BOARD=… 指定看板' : null;
 
-  /// 連一次，回傳收到的第一張畫面的大小；10 秒內沒收到或被結束就失敗。
-  Future<Dimensions> watchOnce(WidgetTester tester, BoardInfo board) async {
+  /// 連一次，回傳收到的第一張畫面的大小，以及從開始連線到收到它花了多久；
+  /// 10 秒內沒收到或被結束就失敗。途中每往前一步都印出當時過了多久，
+  /// 用來決定 core 的 `connectTimeout` 該設多少。
+  Future<(Dimensions, Duration)> watchOnce(
+    WidgetTester tester,
+    BoardInfo board,
+  ) async {
     final link = WebRtcBoardLink();
-    final firstVideo = Completer<Dimensions>();
+    final firstVideo = Completer<(Dimensions, Duration)>();
+    final clock = Stopwatch()..start();
     final events = link.events.listen((event) {
       if (firstVideo.isCompleted) return;
       switch (event) {
         case VideoSizeChanged(:final size):
-          firstVideo.complete(size);
+          firstVideo.complete((size, clock.elapsed));
+        case ConnectAdvanced(:final stage):
+          // ignore: avoid_print
+          print('  ${clock.elapsedMilliseconds} 毫秒：${stage.name}');
         case LinkEnded(:final message):
           firstVideo.completeError('觀看被結束：$message');
       }
@@ -54,9 +63,12 @@ void main() {
   testWidgets('連續看五次，每次都收得到畫面', skip: skip != null, (tester) async {
     final board = BoardInfo.parseAddress(_boardAddress);
     for (var round = 1; round <= 5; round++) {
-      final size = await watchOnce(tester, board);
+      final (size, took) = await watchOnce(tester, board);
       // ignore: avoid_print
-      print('第 $round 次：收到 ${size.width.toInt()}×${size.height.toInt()} 的畫面');
+      print(
+        '第 $round 次：${took.inMilliseconds} 毫秒後收到 '
+        '${size.width.toInt()}×${size.height.toInt()} 的畫面',
+      );
       expect(size.width, greaterThan(0));
       // 讓看板端有時間關掉鏡頭、回到等候中，下一次才是完整的重新開始。
       await tester.runAsync(

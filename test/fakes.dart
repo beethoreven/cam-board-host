@@ -59,6 +59,9 @@ class FakeBoardLink implements BoardLink {
   void emitVideo(double width, double height) =>
       _events.add(VideoSizeChanged(Dimensions(width, height)));
 
+  /// 模擬連線又往前一步。
+  void emitAdvanced(ConnectStage stage) => _events.add(ConnectAdvanced(stage));
+
   /// 模擬觀看被迫結束。
   void emitEnded(String message) => _events.add(LinkEnded(message));
 
@@ -117,6 +120,9 @@ class FakeWindow implements WindowControl {
 
 /// 建立 [ViewerController] 並記下它用過的每一條連線。
 class ViewerHarness {
+  ViewerHarness({this.connectTimeout = const Duration(seconds: 10)});
+
+  final Duration connectTimeout;
   final window = FakeWindow();
   final List<FakeBoardLink> links = [];
 
@@ -127,6 +133,7 @@ class ViewerHarness {
       return link;
     },
     window: window,
+    connectTimeout: connectTimeout,
   );
 
   FakeBoardLink get link => links.last;

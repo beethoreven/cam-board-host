@@ -18,6 +18,13 @@ final class VideoSizeChanged extends BoardLinkEvent {
   final Dimensions size;
 }
 
+/// 連線又往前一步。畫面遲遲不出來時，靠這個判斷卡在哪裡。
+final class ConnectAdvanced extends BoardLinkEvent {
+  const ConnectAdvanced(this.stage);
+
+  final ConnectStage stage;
+}
+
 /// 觀看結束了，而且不是鄉民端自己按「不看了」造成的。
 final class LinkEnded extends BoardLinkEvent {
   const LinkEnded(this.message);
@@ -49,6 +56,14 @@ String describeByeReason(ByeReason reason) => switch (reason) {
   ByeReason.boardUnregistered => '看板端撤銷註冊了',
   ByeReason.versionMismatch => '看板端和鄉民端的版本不同，請兩邊都更新',
   ByeReason.viewerLeft => '已結束觀看',
+};
+
+/// 把「等到逾時畫面還是沒出來」的原因轉成給使用者看的文字。
+String describeConnectFailure(ConnectFailure failure) => switch (failure) {
+  ConnectFailure.boardUnreachable => '連線逾時，請確認兩台裝置在同一個網路',
+  ConnectFailure.boardSilent => '看板端沒有回應',
+  ConnectFailure.exchangeStalled => '和看板端交換連線資訊時中斷了',
+  ConnectFailure.noWorkingPath => '兩台裝置之間的網路不通。有些熱點不允許裝置互相連線，請換一個網路',
 };
 
 /// 用 WebSocket 交換連線資訊、用 WebRTC 接收畫面。
@@ -98,6 +113,7 @@ class WebRtcBoardLink implements BoardLink {
         cancelOnError: true,
       );
       socket.add(const JoinMessage().encode());
+      _events.add(const ConnectAdvanced(ConnectStage.waitingForOffer));
     } on TimeoutException {
       _fail('連線逾時，請確認兩台裝置在同一個網路');
     } on SocketException {
@@ -122,9 +138,14 @@ class WebRtcBoardLink implements BoardLink {
             _fail(describeByeReason(ByeReason.versionMismatch));
           }
         case OfferMessage(:final sdp):
+          _events.add(const ConnectAdvanced(ConnectStage.exchangingPaths));
           await _answer(sdp);
         case CandidateMessage():
           await _candidates.add(message);
+        case CandidatesDoneMessage():
+          // 只用來判斷連不上的原因，不交給視訊連線：
+          // 判定連不上靠的是我們自己的逾時（見 ViewerController）。
+          _events.add(const ConnectAdvanced(ConnectStage.pathsComplete));
         case ByeMessage(:final reason):
           _fail(describeByeReason(reason));
         case JoinMessage() || AnswerMessage():

@@ -1,4 +1,5 @@
 import 'package:cam_board_core/cam_board_core.dart';
+import 'package:fake_async/fake_async.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'fakes.dart';
@@ -15,6 +16,8 @@ void main() {
   }
 
   setUp(() => h = ViewerHarness());
+  // 收掉還在等的逾時計時，免得它在後面的測試執行到一半時才觸發。
+  tearDown(() => h.controller.dispose());
 
   group('開始與結束', () {
     test('點看板：開始連線，還沒收到畫面前視窗不變', () async {
@@ -102,6 +105,127 @@ void main() {
 
       expect(h.controller.state, ViewerState.browsing);
       expect(h.window.videoMode, isFalse);
+    });
+  });
+
+  group('等太久畫面還是沒出來', () {
+    const limit = Duration(seconds: 10);
+
+    /// 開始連線，進行到 [stages] 之後就沒有下文，一路等到逾時。
+    void stallAfter(FakeAsync async, List<ConnectStage> stages) {
+      h.controller.watch(board);
+      async.flushMicrotasks();
+      for (final stage in stages) {
+        h.link.emitAdvanced(stage);
+      }
+      async.elapse(limit);
+    }
+
+    test('時間到之前都還在連線中', () {
+      fakeAsync((async) {
+        h.controller.watch(board);
+        async.elapse(limit - const Duration(milliseconds: 1));
+
+        expect(h.controller.state, ViewerState.connecting);
+      });
+    });
+
+    test('時間到：回到清單、收掉連線', () {
+      fakeAsync((async) {
+        stallAfter(async, []);
+
+        expect(h.controller.state, ViewerState.browsing);
+        expect(h.links.single.closed, isTrue);
+        expect(h.controller.link, isNull);
+        expect(h.window.videoMode, isFalse);
+      });
+    });
+
+    test('加入要求還沒送出去：說連線逾時', () {
+      fakeAsync((async) {
+        stallAfter(async, []);
+
+        expect(h.controller.notice, contains('連線逾時'));
+      });
+    });
+
+    test('沒收到看板端的連線資訊：說看板端沒有回應', () {
+      fakeAsync((async) {
+        stallAfter(async, [ConnectStage.waitingForOffer]);
+
+        expect(h.controller.notice, '看板端沒有回應');
+      });
+    });
+
+    test('沒收到送完了：說交換連線資訊時中斷', () {
+      fakeAsync((async) {
+        stallAfter(async, [
+          ConnectStage.waitingForOffer,
+          ConnectStage.exchangingPaths,
+        ]);
+
+        expect(h.controller.notice, contains('交換連線資訊'));
+      });
+    });
+
+    test('看板端的路徑都送完了：說兩台裝置之間的網路不通', () {
+      fakeAsync((async) {
+        stallAfter(async, [
+          ConnectStage.waitingForOffer,
+          ConnectStage.exchangingPaths,
+          ConnectStage.pathsComplete,
+        ]);
+
+        expect(h.controller.notice, contains('網路不通'));
+      });
+    });
+
+    test('送完了比連線資訊早到，還是算路徑都送完了', () {
+      fakeAsync((async) {
+        stallAfter(async, [
+          ConnectStage.waitingForOffer,
+          ConnectStage.pathsComplete,
+          ConnectStage.exchangingPaths,
+        ]);
+
+        expect(h.controller.notice, contains('網路不通'));
+      });
+    });
+
+    test('畫面已經出來就不會逾時', () {
+      fakeAsync((async) {
+        h.controller.watch(board);
+        async.flushMicrotasks();
+        h.link.emitVideo(1920, 1080);
+        async.elapse(limit * 3);
+
+        expect(h.controller.state, ViewerState.watching);
+        expect(h.link.closed, isFalse);
+      });
+    });
+
+    test('自己按了「不看了」之後，不會又跳出逾時的原因', () {
+      fakeAsync((async) {
+        h.controller.watch(board);
+        async.flushMicrotasks();
+        h.controller.stop();
+        async.elapse(limit * 3);
+
+        expect(h.controller.notice, isNull);
+      });
+    });
+
+    test('上一次的逾時計時不會算到下一次觀看頭上', () {
+      fakeAsync((async) {
+        h.controller.watch(board);
+        async.elapse(limit - const Duration(seconds: 1));
+        h.link.emitEnded('看板端不給看了');
+        h.controller.watch(other);
+        async.elapse(const Duration(seconds: 2));
+
+        expect(h.controller.state, ViewerState.connecting);
+        expect(h.controller.board, other);
+      });
     });
   });
 
