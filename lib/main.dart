@@ -7,6 +7,7 @@ import 'screens/viewing_screen.dart';
 import 'services/board_browser.dart';
 import 'services/board_link.dart';
 import 'services/board_probe.dart';
+import 'services/debug_log.dart';
 import 'services/folder_picker.dart';
 import 'services/shot_store.dart';
 import 'services/viewer_name_store.dart';
@@ -15,6 +16,8 @@ import 'viewer_controller.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // 查問題用：紀錄另外寫一份到檔案，見 CLAUDE.md。
+  startDebugLogFile('cam-board-host-debug.log');
   final window = NativeWindowControl();
   final viewerController = ViewerController(
     createLink: WebRtcBoardLink.new,

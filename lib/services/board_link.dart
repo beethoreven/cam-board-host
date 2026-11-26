@@ -6,6 +6,8 @@ import 'package:cam_board_core/cam_board_core.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 
+import 'debug_log.dart';
+
 /// 觀看過程中發生的事。
 sealed class BoardLinkEvent {
   const BoardLinkEvent();
@@ -100,6 +102,12 @@ class WebRtcBoardLink implements BoardLink {
   WebSocket? _socket;
   RTCPeerConnection? _connection;
   bool _closed = false;
+
+  /// 建立過幾條連線，只用來在紀錄裡分辨是哪一條。
+  static int _created = 0;
+
+  /// 查問題用的紀錄，不影響連線本身。
+  ConnectionLog? _log;
 
   /// 看板端剛說「接下來那一筆資料是一張照片」，在等那筆資料。
   ShotMessage? _awaitedShot;
@@ -252,7 +260,18 @@ class WebRtcBoardLink implements BoardLink {
       return;
     }
     _connection = connection;
+    final log = ConnectionLog(connection, '鄉民端#${++_created}', const {
+      'inbound-rtp',
+      'candidate-pair',
+      'transport',
+    });
+    _log = log;
+    connection.onIceConnectionState = (state) => log.stateChanged('ICE', state);
+    connection.onSignalingState = (state) => log.stateChanged('交換連線資訊', state);
+    connection.onIceGatheringState = (state) =>
+        log.stateChanged('找網路路徑', state);
     connection.onTrack = (event) {
+      debugPrint('連線 鄉民端#$_created：收到 ${event.track.kind} 軌');
       if (event.track.kind == 'video' && event.streams.isNotEmpty) {
         _renderer.srcObject = event.streams.first;
       }
@@ -269,6 +288,7 @@ class WebRtcBoardLink implements BoardLink {
       );
     };
     connection.onConnectionState = (state) {
+      log.stateChanged('整體', state);
       if (state == RTCPeerConnectionState.RTCPeerConnectionStateFailed) {
         _fail('畫面的連線中斷了');
       }
@@ -280,11 +300,13 @@ class WebRtcBoardLink implements BoardLink {
     final answer = await connection.createAnswer();
     await connection.setLocalDescription(answer);
     _socket?.add(AnswerMessage(sdp: answer.sdp!).encode());
+    log.start();
   }
 
   void _reportSize() {
     if (_closed) return;
     final value = _renderer.value;
+    debugPrint('畫面大小變了：${value.width}×${value.height}，要轉 ${value.rotation} 度');
     if (value.width <= 0 || value.height <= 0) return;
     // 手機直拿時，畫面資料本身是橫的，另外帶一個「要轉幾度」的資訊。
     final sideways = value.rotation == 90 || value.rotation == 270;
@@ -343,6 +365,7 @@ class WebRtcBoardLink implements BoardLink {
     if (_closed) return;
     _closed = true;
     _shotSlowTimer?.cancel();
+    _log?.stop();
     final socket = _socket;
     final connection = _connection;
     _socket = null;
