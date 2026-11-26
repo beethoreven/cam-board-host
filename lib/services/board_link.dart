@@ -104,6 +104,10 @@ class WebRtcBoardLink implements BoardLink {
   /// 看板端剛說「接下來那一筆資料是一張照片」，在等那筆資料。
   ShotMessage? _awaitedShot;
 
+  /// 看板端說要傳照片之後這麼久資料還沒到，就留一筆紀錄。正常情況不到一秒。
+  static const _shotSlowAfter = Duration(seconds: 5);
+  Timer? _shotSlowTimer;
+
   /// 我們告訴過看板端「正在抄錄」。沒有在抄錄時送來的照片一律不收。
   bool _recording = false;
 
@@ -160,6 +164,11 @@ class WebRtcBoardLink implements BoardLink {
       // 二進位資料只有一種：緊接在 shot 訊息後面的那張照片。
       final shot = _awaitedShot;
       _awaitedShot = null;
+      _shotSlowTimer?.cancel();
+      debugPrint(
+        '收到 ${raw.length} bytes 的資料，'
+        '${shot == null ? '但沒有在等照片' : '在等照片 ${shot.id}（應該是 ${shot.bytes} bytes）'}',
+      );
       if (shot != null && raw.length == shot.bytes) {
         _events.add(
           ShotReceived(
@@ -201,7 +210,19 @@ class WebRtcBoardLink implements BoardLink {
           // 判定連不上靠的是我們自己的逾時（見 ViewerController）。
           _events.add(const ConnectAdvanced(ConnectStage.pathsComplete));
         case ShotMessage():
-          if (_recording) _awaitedShot = message;
+          debugPrint(
+            '看板端說要傳照片 ${message.id}'
+            '${_recording ? '' : '，但沒有在抄錄，不收'}'
+            '${_awaitedShot == null ? '' : '；上一張（${_awaitedShot!.id}）的資料還沒到'}',
+          );
+          if (_recording) {
+            _awaitedShot = message;
+            final id = message.id;
+            _shotSlowTimer?.cancel();
+            _shotSlowTimer = Timer(_shotSlowAfter, () {
+              debugPrint('照片 $id 的資料等了 ${_shotSlowAfter.inSeconds} 秒還沒到');
+            });
+          }
         case ByeMessage(:final reason):
           _fail(describeByeReason(reason), reason: reason);
         case JoinMessage() ||
@@ -279,6 +300,10 @@ class WebRtcBoardLink implements BoardLink {
   /// 觀看被迫結束：通知上層，並把資源收掉。
   void _fail(String message, {ByeReason? reason}) {
     if (_closed) return;
+    debugPrint(
+      '觀看被結束：$message'
+      '${_awaitedShot == null ? '' : '（照片 ${_awaitedShot!.id} 的資料還沒到）'}',
+    );
     _events.add(LinkEnded(message, reason: reason));
     _release();
   }
@@ -299,6 +324,7 @@ class WebRtcBoardLink implements BoardLink {
   void stopRecording() {
     _recording = false;
     _awaitedShot = null;
+    _shotSlowTimer?.cancel();
     _socket?.add(const RecordStopMessage().encode());
   }
 
@@ -316,6 +342,7 @@ class WebRtcBoardLink implements BoardLink {
   Future<void> _release() async {
     if (_closed) return;
     _closed = true;
+    _shotSlowTimer?.cancel();
     final socket = _socket;
     final connection = _connection;
     _socket = null;
