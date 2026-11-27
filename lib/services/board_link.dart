@@ -122,6 +122,9 @@ class WebRtcBoardLink implements BoardLink {
   /// 已經請看板端重建、還在等新的連線資訊。
   bool _restarting = false;
 
+  /// 上一次記下「已經幾秒沒有新畫面」是記到第幾秒，避免同一秒記兩次。
+  int _notedStall = 0;
+
   /// 看板端的網路路徑常常比我們處理完它的連線資訊還早到，先留著。
   /// 每一條視訊連線各用一個。
   CandidateGate _candidates = CandidateGate((_) async {});
@@ -302,6 +305,15 @@ class WebRtcBoardLink implements BoardLink {
   void _checkStall() {
     if (_closed) return;
     final stalled = _stall.sample(_framesDecoded, _clock.elapsed);
+    // 還沒到要重建的程度，但已經停了一陣子：留一筆，之後看得出「差一點」。
+    final still = _stall.stalledFor(_clock.elapsed).inSeconds;
+    if (_everHadPicture && !stalled && still >= 2 && still != _notedStall) {
+      _notedStall = still;
+      debugPrint('視訊：已經 $still 秒沒有新畫面（累計解出 $_framesDecoded 張）');
+    } else if (still == 0 && _notedStall > 0) {
+      debugPrint('視訊：畫面又在動了（之前停了 $_notedStall 秒）');
+      _notedStall = 0;
+    }
     if (_stall.hasPicture) {
       if (!_everHadPicture) debugPrint('視訊：有畫面了');
       _everHadPicture = true;

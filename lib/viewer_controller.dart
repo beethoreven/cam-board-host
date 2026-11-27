@@ -181,7 +181,10 @@ class ViewerController extends ChangeNotifier {
     link.confirmReceived(id);
     // 照片卡住時看板端會補送。這一張如果其實已經收過（只是回報沒送到），
     // 再回報一次就好，不能再存一次。
-    if (!_recording.firstTime(id)) return;
+    if (!_recording.firstTime(id)) {
+      debugPrint('照片 $id 已經收過了（看板端補送的），只再回報一次，不再存');
+      return;
+    }
     // 存成收到那一刻鄉民端看到的樣子。
     final rotation = _rotation;
     final mirrored = _mirrored;

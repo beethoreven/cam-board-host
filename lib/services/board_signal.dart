@@ -147,9 +147,27 @@ class BoardSignal {
     } else if (_heartbeat.silent(now)) {
       _reconnect('看板端 ${silenceTimeout.inSeconds} 秒沒有回應');
     } else {
+      // 還沒到要換連線的程度，但已經等了一陣子：留一筆，之後看得出「差一點」。
+      final waiting = _heartbeat.waitingFor(now);
+      if (waiting >= _worthNoting && waiting.inSeconds != _notedSilence) {
+        _notedSilence = waiting.inSeconds;
+        debugPrint('訊息連線：看板端已經 ${_seconds(waiting)} 秒沒有回應');
+      }
+      if (shot != null && now - _awaitedSince >= _worthNoting) {
+        debugPrint(
+          '訊息連線：照片 ${shot.id} 的資料已經等了 ${_seconds(now - _awaitedSince)} 秒',
+        );
+      }
       send(PingMessage(_heartbeat.ask(now)));
     }
   }
+
+  /// 等超過這麼久就值得留一筆紀錄（正常情況不到 0.1 秒）。
+  static const _worthNoting = Duration(milliseconds: 1500);
+  int _notedSilence = 0;
+
+  static String _seconds(Duration d) =>
+      (d.inMilliseconds / 1000).toStringAsFixed(1);
 
   void _socketGone(int generation) {
     if (_closed || generation != _generation) return;
@@ -199,6 +217,10 @@ class BoardSignal {
   Future<void> _onRaw(int generation, Object? raw) async {
     if (_closed || generation != _generation) return;
     // 收到任何東西都代表看板端到這裡的方向是通的。
+    if (_notedSilence > 0) {
+      debugPrint('訊息連線：看板端又有回應了');
+      _notedSilence = 0;
+    }
     _heartbeat.heard();
     if (_attempts.failedInARow > 0) {
       debugPrint('訊息連線：新的連線有回應了');
