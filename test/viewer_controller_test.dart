@@ -324,7 +324,10 @@ void main() {
       h.link.emitShot(12, second);
       await pumpEventQueue();
 
-      expect(h.shots.saved.map((s) => s.fileName), ['001.png', '002.png']);
+      expect(h.shots.saved.map((s) => s.fileName), [
+        '2026_11_25_14_30_05_001.png',
+        '2026_11_25_14_30_05_002.png',
+      ]);
       expect(h.shots.saved.map((s) => s.frame), [first, second]);
       expect(h.shots.saved.first.folder, h.controller.recordingFolder);
       expect(h.link.recordingSignals, ['start', 'received 11', 'received 12']);
@@ -381,8 +384,8 @@ void main() {
         'received 12',
       ]);
       expect(h.shots.saved.map((shot) => shot.fileName), [
-        '001.png',
-        '002.png',
+        '2026_11_25_14_30_05_001.png',
+        '2026_11_25_14_30_05_002.png',
       ]);
     });
 
@@ -414,7 +417,7 @@ void main() {
       h.link.emitShot(2);
       await pumpEventQueue();
 
-      expect(h.shots.saved.single.fileName, '001.png');
+      expect(h.shots.saved.single.fileName, '2026_11_25_14_30_05_001.png');
       expect(h.controller.recordingError, isNull);
     });
 
@@ -450,7 +453,8 @@ void main() {
 
       expect(h.shots.folders, hasLength(2));
       expect(h.shots.saved.last.folder, endsWith('26-11-25-15-00-00'));
-      expect(h.shots.saved.last.fileName, '001.png');
+      // 檔名前面的時間跟著這一次抄錄，不是上一次的。
+      expect(h.shots.saved.last.fileName, '2026_11_25_15_00_00_001.png');
     });
   });
 
@@ -625,6 +629,11 @@ void main() {
         '/Users/me/Documents/甲班抄錄紀錄_26-11-25-14-30-06',
       ]);
       expect(h.controller.recordingFolder, h.shots.folders.last);
+
+      // 照片檔名前面的時間跟資料夾名稱裡的是同一個（下一秒），兩邊對得起來。
+      h.link.emitShot(1);
+      await pumpEventQueue();
+      expect(h.shots.saved.single.fileName, '2026_11_25_14_30_06_001.png');
     });
 
     test('選資料夾的時候換成看另一個看板：不會替新的那一次開始抄錄', () async {

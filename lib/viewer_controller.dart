@@ -136,13 +136,16 @@ class ViewerController extends ChangeNotifier {
       return;
     }
     try {
-      final folder = await _createRecordingFolder(parent, board.name);
+      final (:folder, :startedAt) = await _createRecordingFolder(
+        parent,
+        board.name,
+      );
       if (!sameWatch() || recording) {
         // 建資料夾的時候觀看結束了：不留一個空的資料夾在那裡。
         await _shots.discardFolder(folder);
         return;
       }
-      _recording.start(folder);
+      _recording.start(folder, startedAt);
       link.startRecording();
     } catch (_) {
       _recordingError = '沒辦法在這個位置建立資料夾，請換一個位置';
@@ -152,14 +155,20 @@ class ViewerController extends ChangeNotifier {
 
   /// 建立這次抄錄的資料夾。名稱裡的時間是開始抄錄的時間；同一秒內已經抄錄過一次
   /// （同名的資料夾已經在了）就用下一秒，不跟上一次共用。
-  Future<String> _createRecordingFolder(String parent, String boardName) async {
-    final startedAt = _now();
+  ///
+  /// 回傳資料夾，以及實際用在名稱裡的時間：照片的檔名前面也要加同一個時間。
+  Future<({String folder, DateTime startedAt})> _createRecordingFolder(
+    String parent,
+    String boardName,
+  ) async {
+    final now = _now();
     for (var later = 0; later < _folderNameTries; later++) {
+      final startedAt = now.add(Duration(seconds: later));
       final folder = await _shots.createFolder(
         parent,
-        recordingFolderName(boardName, startedAt.add(Duration(seconds: later))),
+        recordingFolderName(boardName, startedAt),
       );
-      if (folder != null) return folder;
+      if (folder != null) return (folder: folder, startedAt: startedAt);
     }
     throw StateError('找不到沒用過的資料夾名稱');
   }
