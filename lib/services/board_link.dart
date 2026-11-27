@@ -1,12 +1,13 @@
 import 'dart:async';
-import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:cam_board_core/cam_board_core.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 
+import 'board_signal.dart';
 import 'debug_log.dart';
+
+export 'board_signal.dart' show describeByeReason;
 
 /// 觀看過程中發生的事。
 sealed class BoardLinkEvent {
@@ -77,14 +78,6 @@ abstract interface class BoardLink {
 /// 建立一條新的連線。每次觀看用一條新的。
 typedef BoardLinkFactory = BoardLink Function();
 
-/// 把看板端送來的結束原因轉成給使用者看的文字。
-String describeByeReason(ByeReason reason) => switch (reason) {
-  ByeReason.boardStopped => '看板端不給看了',
-  ByeReason.boardUnregistered => '看板端撤銷註冊了',
-  ByeReason.versionMismatch => '看板端和鄉民端的版本不同，請兩邊都更新',
-  ByeReason.viewerLeft => '已結束觀看',
-};
-
 /// 把「等到逾時畫面還是沒出來」的原因轉成給使用者看的文字。
 String describeConnectFailure(ConnectFailure failure) => switch (failure) {
   ConnectFailure.boardUnreachable => '連線逾時，請確認兩台裝置在同一個網路',
@@ -94,41 +87,44 @@ String describeConnectFailure(ConnectFailure failure) => switch (failure) {
 };
 
 /// 用 WebSocket 交換連線資訊、用 WebRTC 接收畫面。
+///
+/// 兩條連線各自會救（規則在 core 的 `recovery.dart`）：訊息連線卡住時由
+/// [BoardSignal] 換一條新的接回去；視訊連續幾秒沒有新畫面時，這裡把視訊連線
+/// 整條重建（請看板端重送連線資訊）。畫面元件兩者都不動，所以視窗不會閃回清單。
 class WebRtcBoardLink implements BoardLink {
-  static const _timeout = Duration(seconds: 6);
-
   final _events = StreamController<BoardLinkEvent>.broadcast();
   final RTCVideoRenderer _renderer = RTCVideoRenderer();
-  WebSocket? _socket;
+  BoardSignal? _signal;
   RTCPeerConnection? _connection;
+  StreamSubscription<SignalMessage>? _messages;
+  StreamSubscription<({int id, RawFrame frame})>? _shots;
   bool _closed = false;
 
-  /// 建立過幾條連線，只用來在紀錄裡分辨是哪一條。
+  /// 建立過幾條視訊連線，只用來在紀錄裡分辨是哪一條。
   static int _created = 0;
 
-  /// 查問題用的紀錄，不影響連線本身。
+  /// 查問題用的紀錄，同時也是每秒讀統計的來源。
   ConnectionLog? _log;
 
-  /// 看板端剛說「接下來那一筆資料是一張照片」，在等那筆資料。
-  ShotMessage? _awaitedShot;
+  /// 判斷畫面有沒有停住，以及連續重建了幾次都沒救回來。
+  final VideoStallDetector _stall = VideoStallDetector();
+  final RecoveryAttempts _videoAttempts = RecoveryAttempts();
+  final Stopwatch _clock = Stopwatch()..start();
+  Timer? _stallTimer;
 
-  /// 看板端說要傳照片之後這麼久資料還沒到，就留一筆紀錄。正常情況不到一秒。
-  static const _shotSlowAfter = Duration(seconds: 5);
-  Timer? _shotSlowTimer;
+  /// 目前這條視訊連線解出了幾張畫面（從每秒的統計讀來）。
+  int _framesDecoded = 0;
 
-  /// 我們告訴過看板端「正在抄錄」。沒有在抄錄時送來的照片一律不收。
-  bool _recording = false;
+  /// 這一次觀看曾經有過畫面。在那之前畫面出不來，由上層的連線逾時處理
+  /// （它分得出卡在哪一步），這裡不重建。
+  bool _everHadPicture = false;
+
+  /// 已經請看板端重建、還在等新的連線資訊。
+  bool _restarting = false;
 
   /// 看板端的網路路徑常常比我們處理完它的連線資訊還早到，先留著。
-  late final CandidateGate _candidates = CandidateGate(
-    (candidate) async => _connection?.addCandidate(
-      RTCIceCandidate(
-        candidate.candidate,
-        candidate.sdpMid,
-        candidate.sdpMLineIndex,
-      ),
-    ),
-  );
+  /// 每一條視訊連線各用一個。
+  CandidateGate _candidates = CandidateGate((_) async {});
 
   /// 訊息一則處理完才處理下一則。處理連線資訊要一段時間，
   /// 不排隊的話後面的訊息會在它做到一半時插進來。
@@ -142,72 +138,32 @@ class WebRtcBoardLink implements BoardLink {
     try {
       await _renderer.initialize();
       _renderer.onResize = _reportSize;
-      final socket = await WebSocket.connect(board.signalUri.toString())
-          .timeout(_timeout);
-      if (_closed) {
-        await socket.close();
-        return;
-      }
-      _socket = socket;
-      socket.listen(
-        (raw) => _handling = _handling.then((_) => _onSocketMessage(raw)),
-        onDone: () => _fail('和看板端的連線中斷了'),
-        onError: (_) => _fail('和看板端的連線中斷了'),
-        cancelOnError: true,
-      );
-      socket.add(JoinMessage(name: viewerName).encode());
-      _events.add(const ConnectAdvanced(ConnectStage.waitingForOffer));
-    } on TimeoutException {
-      _fail('連線逾時，請確認兩台裝置在同一個網路');
-    } on SocketException {
-      _fail('連不上看板端，它可能已經撤銷註冊');
     } catch (_) {
       _fail('無法開始觀看');
+      return;
     }
+    if (_closed) return;
+    final signal = BoardSignal(uri: board.signalUri, viewerName: viewerName);
+    _signal = signal;
+    _messages = signal.messages.listen(
+      (message) => _handling = _handling.then((_) => _onMessage(message)),
+    );
+    _shots = signal.shots.listen((shot) {
+      if (!_closed) _events.add(ShotReceived(shot.id, shot.frame));
+    });
+    unawaited(
+      signal.ended.then((end) => _fail(end.message, reason: end.reason)),
+    );
+    await signal.connect();
+    if (_closed) return;
+    _events.add(const ConnectAdvanced(ConnectStage.waitingForOffer));
+    _stallTimer = Timer.periodic(heartbeatInterval, (_) => _checkStall());
   }
 
-  Future<void> _onSocketMessage(Object? raw) async {
+  Future<void> _onMessage(SignalMessage message) async {
     if (_closed) return;
-    if (raw is List<int>) {
-      // 二進位資料只有一種：緊接在 shot 訊息後面的那張照片。
-      final shot = _awaitedShot;
-      _awaitedShot = null;
-      _shotSlowTimer?.cancel();
-      debugPrint(
-        '收到 ${raw.length} bytes 的資料，'
-        '${shot == null ? '但沒有在等照片' : '在等照片 ${shot.id}（應該是 ${shot.bytes} bytes）'}',
-      );
-      if (shot != null && raw.length == shot.bytes) {
-        _events.add(
-          ShotReceived(
-            shot.id,
-            RawFrame(
-              width: shot.width,
-              height: shot.height,
-              rotation: shot.rotation,
-              i420: raw is Uint8List ? raw : Uint8List.fromList(raw),
-            ),
-          ),
-        );
-      }
-      return;
-    }
-    if (raw is! String) return;
-    final SignalMessage message;
-    try {
-      message = SignalMessage.decode(raw);
-    } on FormatException {
-      return;
-    }
     try {
       switch (message) {
-        case HelloMessage():
-          if (!message.isCompatible) {
-            _fail(
-              describeByeReason(ByeReason.versionMismatch),
-              reason: ByeReason.versionMismatch,
-            );
-          }
         case OfferMessage(:final sdp):
           _events.add(const ConnectAdvanced(ConnectStage.exchangingPaths));
           await _answer(sdp);
@@ -217,37 +173,25 @@ class WebRtcBoardLink implements BoardLink {
           // 只用來判斷連不上的原因，不交給視訊連線：
           // 判定連不上靠的是我們自己的逾時（見 ViewerController）。
           _events.add(const ConnectAdvanced(ConnectStage.pathsComplete));
-        case ShotMessage():
-          debugPrint(
-            '看板端說要傳照片 ${message.id}'
-            '${_recording ? '' : '，但沒有在抄錄，不收'}'
-            '${_awaitedShot == null ? '' : '；上一張（${_awaitedShot!.id}）的資料還沒到'}',
-          );
-          if (_recording) {
-            _awaitedShot = message;
-            final id = message.id;
-            _shotSlowTimer?.cancel();
-            _shotSlowTimer = Timer(_shotSlowAfter, () {
-              debugPrint('照片 $id 的資料等了 ${_shotSlowAfter.inSeconds} 秒還沒到');
-            });
-          }
-        case ByeMessage(:final reason):
-          _fail(describeByeReason(reason), reason: reason);
-        case JoinMessage() ||
-            AnswerMessage() ||
-            RecordStartMessage() ||
-            RecordStopMessage() ||
-            ShotReceivedMessage():
-          // 這幾種只會由鄉民端送出，看板端送來就忽略。
+        default:
+          // 其他種類 BoardSignal 已經處理掉了，不會送到這裡。
           break;
       }
-    } catch (_) {
-      _fail('無法開始觀看');
+    } catch (e) {
+      debugPrint('處理看板端的訊息失敗：$e');
+      // 曾經有畫面的話當成視訊壞了，照規則重建；一開始就失敗才直接結束。
+      if (_everHadPicture) {
+        await _restartVideo('處理連線資訊失敗');
+      } else {
+        _fail('無法開始觀看');
+      }
     }
   }
 
   /// 收到看板端的連線資訊：建立只收不送的連線，並回覆。
+  /// 重建時也是走這裡，舊的那條先收掉。
   Future<void> _answer(String offerSdp) async {
+    await _dropConnection();
     // 兩端都在同一個區域網路，不需要外部伺服器協助連線。
     final connection = await createPeerConnection({
       'iceServers': <Map<String, dynamic>>[],
@@ -260,18 +204,42 @@ class WebRtcBoardLink implements BoardLink {
       return;
     }
     _connection = connection;
-    final log = ConnectionLog(connection, '鄉民端#${++_created}', const {
-      'inbound-rtp',
-      'candidate-pair',
-      'transport',
-    });
+    _videoConnections++;
+    _restarting = false;
+    _framesDecoded = 0;
+    _stall.connectionStarted(_clock.elapsed);
+    final number = ++_created;
+    final log = ConnectionLog(
+      connection,
+      '鄉民端#$number',
+      const {'inbound-rtp', 'candidate-pair', 'transport'},
+      onStats: (reports) {
+        if (!identical(_connection, connection)) return;
+        for (final report in reports) {
+          if (report.type != 'inbound-rtp') continue;
+          final frames = report.values['framesDecoded'];
+          if (frames is num) _framesDecoded = frames.toInt();
+        }
+      },
+    );
     _log = log;
+    final candidates = CandidateGate(
+      (candidate) async => connection.addCandidate(
+        RTCIceCandidate(
+          candidate.candidate,
+          candidate.sdpMid,
+          candidate.sdpMLineIndex,
+        ),
+      ),
+    );
+    _candidates = candidates;
     connection.onIceConnectionState = (state) => log.stateChanged('ICE', state);
     connection.onSignalingState = (state) => log.stateChanged('交換連線資訊', state);
     connection.onIceGatheringState = (state) =>
         log.stateChanged('找網路路徑', state);
     connection.onTrack = (event) {
-      debugPrint('連線 鄉民端#$_created：收到 ${event.track.kind} 軌');
+      debugPrint('連線 鄉民端#$number：收到 ${event.track.kind} 軌');
+      if (!identical(_connection, connection)) return;
       if (event.track.kind == 'video' && event.streams.isNotEmpty) {
         _renderer.srcObject = event.streams.first;
       }
@@ -279,28 +247,104 @@ class WebRtcBoardLink implements BoardLink {
     connection.onIceCandidate = (candidate) {
       final text = candidate.candidate;
       if (text == null || text.isEmpty) return;
-      _socket?.add(
+      if (!identical(_connection, connection)) return;
+      _signal?.send(
         CandidateMessage(
           candidate: text,
           sdpMid: candidate.sdpMid,
           sdpMLineIndex: candidate.sdpMLineIndex,
-        ).encode(),
+        ),
       );
     };
     connection.onConnectionState = (state) {
       log.stateChanged('整體', state);
+      if (!identical(_connection, connection)) return;
       if (state == RTCPeerConnectionState.RTCPeerConnectionStateFailed) {
-        _fail('畫面的連線中斷了');
+        // 曾經有畫面：照規則重建。一開始就連不上：交給上層的連線逾時去說明原因。
+        if (_everHadPicture) {
+          _restartVideo('視訊連線失敗');
+        } else {
+          _fail('畫面的連線中斷了');
+        }
       }
     };
     await connection.setRemoteDescription(
       RTCSessionDescription(offerSdp, 'offer'),
     );
-    await _candidates.open();
+    await candidates.open();
     final answer = await connection.createAnswer();
     await connection.setLocalDescription(answer);
-    _socket?.add(AnswerMessage(sdp: answer.sdp!).encode());
+    _signal?.send(AnswerMessage(sdp: answer.sdp!));
     log.start();
+  }
+
+  /// 測試用：讓訊息連線卡住（見 [BoardSignal.debugStall]）。
+  @visibleForTesting
+  // ignore: invalid_use_of_visible_for_testing_member
+  void debugStallSignal() => _signal?.debugStall();
+
+  /// 測試用：把視訊連線硬關掉，不通知任何人，就像畫面突然不再進來。
+  @visibleForTesting
+  Future<void> debugBreakVideo() async => _connection?.close();
+
+  /// 測試用：視訊連線重建過幾次、訊息連線換過幾次、目前這條視訊解出幾張。
+  @visibleForTesting
+  int get debugVideoConnections => _videoConnections;
+  int _videoConnections = 0;
+
+  @visibleForTesting
+  int get debugSignalReconnects => _signal?.reconnects ?? 0;
+
+  @visibleForTesting
+  int get debugFramesDecoded => _framesDecoded;
+
+  /// 每秒看一次畫面有沒有在動。
+  void _checkStall() {
+    if (_closed) return;
+    final stalled = _stall.sample(_framesDecoded, _clock.elapsed);
+    if (_stall.hasPicture) {
+      if (!_everHadPicture) debugPrint('視訊：有畫面了');
+      _everHadPicture = true;
+      if (!stalled && _videoAttempts.failedInARow > 0) {
+        debugPrint('視訊：重建之後畫面回來了');
+        _videoAttempts.succeeded();
+      }
+    }
+    if (stalled && _everHadPicture) {
+      _restartVideo('${videoStallTimeout.inSeconds} 秒沒有新畫面');
+    }
+  }
+
+  /// 把視訊連線整條重建：收掉舊的，請看板端重送連線資訊。
+  Future<void> _restartVideo(String why) async {
+    if (_closed) return;
+    if (_videoAttempts.exhausted) {
+      _fail('畫面的連線中斷了');
+      return;
+    }
+    _videoAttempts.failed();
+    debugPrint('視訊：$why，重建（連續第 ${_videoAttempts.failedInARow} 次）');
+    _restarting = true;
+    // 從現在重新等：等不到新的連線資訊或新的畫面，時間到會再試一次。
+    _framesDecoded = 0;
+    _stall.connectionStarted(_clock.elapsed);
+    await _dropConnection();
+    _signal?.send(const VideoRestartMessage());
+  }
+
+  /// 收掉目前的視訊連線（畫面元件留著，停在最後一張）。
+  Future<void> _dropConnection() async {
+    final connection = _connection;
+    _connection = null;
+    _log?.stop();
+    _log = null;
+    _candidates = CandidateGate((_) async {});
+    if (connection == null) return;
+    try {
+      await connection.close();
+    } catch (_) {
+      // 已經壞掉的連線關不乾淨沒關係。
+    }
   }
 
   void _reportSize() {
@@ -322,10 +366,7 @@ class WebRtcBoardLink implements BoardLink {
   /// 觀看被迫結束：通知上層，並把資源收掉。
   void _fail(String message, {ByeReason? reason}) {
     if (_closed) return;
-    debugPrint(
-      '觀看被結束：$message'
-      '${_awaitedShot == null ? '' : '（照片 ${_awaitedShot!.id} 的資料還沒到）'}',
-    );
+    debugPrint('觀看被結束：$message${_restarting ? '（視訊正在重建）' : ''}');
     _events.add(LinkEnded(message, reason: reason));
     _release();
   }
@@ -337,42 +378,31 @@ class WebRtcBoardLink implements BoardLink {
   );
 
   @override
-  void startRecording() {
-    _recording = true;
-    _socket?.add(const RecordStartMessage().encode());
-  }
+  void startRecording() => _signal?.recording = true;
 
   @override
-  void stopRecording() {
-    _recording = false;
-    _awaitedShot = null;
-    _shotSlowTimer?.cancel();
-    _socket?.add(const RecordStopMessage().encode());
-  }
+  void stopRecording() => _signal?.recording = false;
 
   @override
-  void confirmReceived(int id) =>
-      _socket?.add(ShotReceivedMessage(id: id).encode());
+  void confirmReceived(int id) => _signal?.send(ShotReceivedMessage(id: id));
 
   @override
   Future<void> close() async {
     if (_closed) return;
-    _socket?.add(const ByeMessage(ByeReason.viewerLeft).encode());
     await _release();
   }
 
   Future<void> _release() async {
     if (_closed) return;
     _closed = true;
-    _shotSlowTimer?.cancel();
-    _log?.stop();
-    final socket = _socket;
-    final connection = _connection;
-    _socket = null;
-    _connection = null;
+    _stallTimer?.cancel();
+    await _messages?.cancel();
+    await _shots?.cancel();
+    final signal = _signal;
+    _signal = null;
     try {
-      await socket?.close();
-      await connection?.close();
+      await signal?.close();
+      await _dropConnection();
       _renderer.srcObject = null;
       await _renderer.dispose();
     } catch (_) {

@@ -42,7 +42,10 @@ String? startDebugLogFile(String fileName) {
 /// 統計是 WebRTC 自己的數字（送出、收到、遺失、重送、估計的頻寬、解出幾張…），
 /// 都是從連線開始累計的；要看某一段時間的量，拿前後兩筆相減。
 class ConnectionLog {
-  ConnectionLog(this._connection, this._label, this._types);
+  ConnectionLog(this._connection, this._label, this._types, {this.onStats});
+
+  /// 每次讀到統計時呼叫（鄉民端用它判斷畫面有沒有停住）。
+  final void Function(List<StatsReport> reports)? onStats;
 
   final RTCPeerConnection _connection;
 
@@ -82,6 +85,7 @@ class ConnectionLog {
       final reports = await _connection.getStats().timeout(
         const Duration(seconds: 3),
       );
+      onStats?.call(reports);
       for (final report in reports) {
         if (!_types.contains(report.type)) continue;
         // 沒被選用的網路路徑不記，數量多又都是零。

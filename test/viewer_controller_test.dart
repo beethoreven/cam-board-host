@@ -366,6 +366,26 @@ void main() {
       expect(h.shots.saved, isEmpty);
     });
 
+    test('看板端補送同一張：再回報一次，但只存一次', () async {
+      await startWatching();
+      await h.controller.startRecording();
+      h.link.emitShot(11);
+      h.link.emitShot(11);
+      h.link.emitShot(12);
+      await pumpEventQueue();
+
+      expect(h.link.recordingSignals, [
+        'start',
+        'received 11',
+        'received 11',
+        'received 12',
+      ]);
+      expect(h.shots.saved.map((shot) => shot.fileName), [
+        '001.png',
+        '002.png',
+      ]);
+    });
+
     test('照片一收到就回報，不等存檔', () async {
       await startWatching();
       await h.controller.startRecording();

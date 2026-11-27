@@ -179,6 +179,9 @@ class ViewerController extends ChangeNotifier {
     final link = _link;
     if (folder == null || link == null) return;
     link.confirmReceived(id);
+    // 照片卡住時看板端會補送。這一張如果其實已經收過（只是回報沒送到），
+    // 再回報一次就好，不能再存一次。
+    if (!_recording.firstTime(id)) return;
     // 存成收到那一刻鄉民端看到的樣子。
     final rotation = _rotation;
     final mirrored = _mirrored;
