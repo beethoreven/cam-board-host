@@ -57,7 +57,7 @@ class CamBoardApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: '鄉民端',
+      title: '看板的鄉民',
       home: ListenableBuilder(
         listenable: viewerController,
         builder: (context, _) => viewerController.state == ViewerState.browsing
